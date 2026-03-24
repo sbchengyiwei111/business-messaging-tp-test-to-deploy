@@ -2,59 +2,44 @@
 //
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
-
-
 import { auth0 } from "@/lib/auth0";
+import { getCatalogs, getAppDetails } from "@/app/api/be_utils";
+import { CatalogWithDetails } from "@/app/types/api";
 import LoggedOut from "@/app/components/LoggedOut";
-import { getCatalogs } from '@/app/api/be_utils';
-import AssetPage from '@/app/components/AssetPage';
-import AssetCard from '@/app/components/AssetCard';
-
-interface Catalog {
-    id: string;
-    name?: string;
-    vertical?: string;
-    item_count?: number;
-    last_updated?: string;
-    status?: string;
-    access_token?: string;
-    business_id?: string;
-}
+import WabaPageLayout from "@/app/components/WabaPageLayout";
+import CatalogCard from "@/app/components/CatalogCard";
+import publicConfig from "@/app/public_config";
+import { BookOpen } from "lucide-react";
 
 export default async function MyCatalogs() {
-    // Fetch the user session
-    const session = await auth0.getSession();
+  const session = await auth0.getSession();
+  if (!session) return <LoggedOut />;
 
-    // If no session, show the logged out component
-    if (!session) {
-        return <LoggedOut />;
-    }
+  const userId = session.user.email;
+  const appDetails = await getAppDetails(publicConfig.app_id);
+  const catalogs = await getCatalogs(userId);
 
-    const user_id = session.user.email;
-
-    // Fetch catalogs from the API
-    const catalogs = await getCatalogs(user_id);
-
-    return (
-        <AssetPage
-            title="My Facebook Catalogs"
-            user_id={user_id}
-            isEmpty={catalogs.length === 0}
-            emptyMessage="No catalogs found. Catalogs will appear here once they are connected to your account."
-        >
-            {catalogs.map((catalog: Catalog) => (
-                <AssetCard
-                    key={catalog.id}
-                    id={catalog.id}
-                    title={catalog.name || 'Unnamed Catalog'}
-                    access_token={catalog.access_token || ''}
-                    business_id={catalog.business_id || ''}
-                    selected_asset_type="product-catalog"
-                    path="product_catalogs"
-                    action_url={`https://business.facebook.com/commerce/catalogs/${catalog.id}/products?business_id=${catalog.business_id}`}
-                    action_title="View in Commerce Manager"
-                />
-            ))}
-        </AssetPage>
-    );
+  return (
+    <WabaPageLayout
+      title="My Catalogs"
+      description="Facebook Catalogs connected to your app."
+      user_id={userId}
+      logo_url={appDetails.logo_url}
+      app_name={appDetails.name}
+      isEmpty={catalogs.length === 0}
+      emptyMessage="No catalogs found."
+      emptyDescription="Catalogs will appear here once they are connected through the Embedded Signup flow."
+      icon={<BookOpen className="w-10 h-10" />}
+    >
+      {catalogs.map((catalog: CatalogWithDetails) => (
+        <CatalogCard
+          key={catalog.id}
+          id={catalog.id}
+          name={catalog.name || "Unnamed Catalog"}
+          access_token={catalog.access_token || ""}
+          business_id={catalog.business_id || ""}
+        />
+      ))}
+    </WabaPageLayout>
+  );
 }

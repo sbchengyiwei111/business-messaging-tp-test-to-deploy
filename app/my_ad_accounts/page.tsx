@@ -2,55 +2,44 @@
 //
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
-
-
-import LoggedOut from "@/app/components/LoggedOut";
-import { getAdAccounts } from '@/app/api/be_utils';
 import { auth0 } from "@/lib/auth0";
-import AssetPage from '@/app/components/AssetPage';
-import AssetCard from '@/app/components/AssetCard';
-
-interface AdAccount {
-  ad_account_id: string;
-  name?: string;
-  access_token: string;
-  business_id: string;
-}
+import { getAdAccounts, getAppDetails } from "@/app/api/be_utils";
+import { AdAccountWithDetails } from "@/app/types/api";
+import LoggedOut from "@/app/components/LoggedOut";
+import WabaPageLayout from "@/app/components/WabaPageLayout";
+import AdAccountCard from "@/app/components/AdAccountCard";
+import publicConfig from "@/app/public_config";
+import { Megaphone } from "lucide-react";
 
 export default async function MyAdAccounts() {
-  // Fetch the user session
   const session = await auth0.getSession();
+  if (!session) return <LoggedOut />;
 
-  // If no session, show the logged out component
-  if (!session) {
-    return <LoggedOut />;
-  }
-
-  const user_id = session.user.email;
-
-  // Fetch ad account names from Facebook Graph API
-  const adAccountsWithNames = await getAdAccounts(user_id);
+  const userId = session.user.email;
+  const appDetails = await getAppDetails(publicConfig.app_id);
+  const adAccounts = await getAdAccounts(userId);
 
   return (
-    <AssetPage
+    <WabaPageLayout
       title="My Ad Accounts"
-      user_id={user_id}
-      isEmpty={adAccountsWithNames.length === 0}
-      emptyMessage="No ad accounts found. Ad accounts will appear here once they are connected to your account."
+      description="Facebook Ad Accounts connected to your app."
+      user_id={userId}
+      logo_url={appDetails.logo_url}
+      app_name={appDetails.name}
+      isEmpty={adAccounts.length === 0}
+      emptyMessage="No ad accounts found."
+      emptyDescription="Ad accounts will appear here once they are connected through the Embedded Signup flow."
+      icon={<Megaphone className="w-10 h-10" />}
     >
-      {adAccountsWithNames.map((account: AdAccount) => (
-        <AssetCard
+      {adAccounts.map((account: AdAccountWithDetails) => (
+        <AdAccountCard
           key={account.ad_account_id}
-          id={account.ad_account_id}
-          title={account.name || 'Unnamed Account'}
-          access_token={account.access_token || ''}
-          business_id={account.business_id}
-          selected_asset_type="ad-account"
-          path="ad_accounts"
-          action_url={`https://adsmanager.facebook.com/adsmanager/manage/accounts?act=${account.ad_account_id}`}
-          action_title="View in Ads Manager"
+          ad_account_id={account.ad_account_id}
+          name={account.name || "Unnamed Account"}
+          access_token={account.access_token || ""}
+          business_id={account.business_id || ""}
         />
       ))}
-    </AssetPage>
+    </WabaPageLayout>
   );
 }
