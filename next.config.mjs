@@ -6,17 +6,14 @@
 /** @type {import('next').NextConfig} */
 
 const nextConfig = {
-  typescript: { ignoreBuildErrors: true },
   reactStrictMode: false,
-  eslint: {
-
-  },
+  eslint: {},
   images: {
     remotePatterns: [
       {
         protocol: 'https',
         hostname: '**',
-      }
+      },
     ],
   },
 };

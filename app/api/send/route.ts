@@ -3,18 +3,34 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+import { type NextRequest, NextResponse } from 'next/server';
 
-import { type NextRequest, NextResponse } from 'next/server'
-import { send, getTokenForWaba } from "../be_utils"
-import { withAuth } from "../auth_wrapper";
+import { send, getTokenForWaba } from '@/app/api/beUtils';
+import { withAuth } from '@/app/api/authWrapper';
 
-export const POST = withAuth(async function myApiRoute(request: NextRequest) {
+export const POST = withAuth(async function sendMessage(request: NextRequest, session) {
+  try {
     const body = await request.json();
-    const waba_id = body.waba_id;
-    const access_token = await getTokenForWaba(waba_id);
-    const phone_number_id = body.phone_number_id;
-    const dest_phone = body.dest_phone;
-    const message_content = body.message_content;
-    await send(phone_number_id, access_token, dest_phone, message_content);
-    return new NextResponse('{"send":"ok"}');
+    const { waba_id: wabaId, phone_number_id: phoneNumberId, dest_phone: destPhone, message_content: messageContent } = body;
+
+    if (!wabaId || typeof wabaId !== 'string') {
+      return NextResponse.json({ error: 'Missing or invalid waba_id' }, { status: 400 });
+    }
+    if (!phoneNumberId || typeof phoneNumberId !== 'string') {
+      return NextResponse.json({ error: 'Missing or invalid phone_number_id' }, { status: 400 });
+    }
+    if (!destPhone || typeof destPhone !== 'string') {
+      return NextResponse.json({ error: 'Missing or invalid dest_phone' }, { status: 400 });
+    }
+    if (!messageContent || typeof messageContent !== 'string') {
+      return NextResponse.json({ error: 'Missing or invalid message_content' }, { status: 400 });
+    }
+
+    const accessToken = await getTokenForWaba(wabaId, session.user.email);
+    const result = await send(phoneNumberId, accessToken, destPhone, messageContent);
+    return NextResponse.json({ status: 'ok', data: result });
+  } catch (error) {
+    console.error('Failed to send message:', error);
+    return NextResponse.json({ error: 'Failed to send message' }, { status: 500 });
+  }
 });

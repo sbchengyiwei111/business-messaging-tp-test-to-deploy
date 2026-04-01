@@ -3,39 +3,27 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+import { type NextRequest, NextResponse } from 'next/server';
+import { deregisterNumber, getTokenForWaba } from '@/app/api/beUtils';
+import { withAuth } from '@/app/api/authWrapper';
 
-import { type NextRequest, NextResponse } from 'next/server'
-import { deregisterNumber, getTokenForWaba } from "../be_utils"
-import { withAuth } from "../auth_wrapper";
+export const POST = withAuth(async function handleDeregister(request: NextRequest, session) {
+  try {
+    const body = await request.json();
+    const { wabaId, phoneId } = body;
 
-async function handleDeregister(request: NextRequest) {
-    try {
-        const body = await request.json();
-        const { wabaId, phoneId } = body;
-        const acesssToken = await getTokenForWaba(wabaId);
-        await deregisterNumber(phoneId, acesssToken);
-        return new NextResponse(JSON.stringify({ response: 'ok' }));
-    } catch (err: any) {
-        console.error('deregister error:', err);
-        const { code, message, status } = mapGraphApiError(err);
-        return NextResponse.json(
-            { error: true, code, message },
-            { status },
-        );
+    if (!wabaId || typeof wabaId !== 'string') {
+      return NextResponse.json({ error: 'Missing or invalid wabaId' }, { status: 400 });
     }
-}
-
-function mapGraphApiError(err: any): { code: string; message: string; status: number } {
-    const apiCode = err?.code;
-    const apiSubcode = err?.error_subcode;
-
-    if (apiCode === 100) {
-        return { code: 'INVALID_PARAMS', message: 'Invalid parameters provided.', status: 400 };
+    if (!phoneId || typeof phoneId !== 'string') {
+      return NextResponse.json({ error: 'Missing or invalid phoneId' }, { status: 400 });
     }
-    if (apiCode === 4 || apiSubcode === 2388093) {
-        return { code: 'RATE_LIMITED', message: 'Too many requests. Please wait and try again.', status: 429 };
-    }
-    return { code: 'UNKNOWN_ERROR', message: 'An unexpected error occurred. Please try again.', status: 500 };
-}
 
-export const POST = withAuth(handleDeregister);
+    const accessToken = await getTokenForWaba(wabaId, session.user.email);
+    await deregisterNumber(phoneId, accessToken);
+    return NextResponse.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Failed to deregister phone number:', error);
+    return NextResponse.json({ error: 'Failed to deregister phone number' }, { status: 500 });
+  }
+});

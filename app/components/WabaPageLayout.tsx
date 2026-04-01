@@ -2,15 +2,15 @@
 //
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
-"use client";
-import { ReactNode } from "react";
-import SidebarLayout from "@/app/components/SidebarLayout";
+import type { ReactNode } from 'react';
+
+import SidebarLayout from '@/app/components/SidebarLayout';
 
 interface WabaPageLayoutProps {
   children: ReactNode;
-  user_id: string;
-  logo_url?: string;
-  app_name: string;
+  userId: string;
+  logoUrl?: string;
+  appName: string;
   title: string;
   description?: string;
   isEmpty?: boolean;
@@ -21,18 +21,18 @@ interface WabaPageLayoutProps {
 
 export default function WabaPageLayout({
   children,
-  user_id,
-  logo_url,
-  app_name,
+  userId,
+  logoUrl,
+  appName,
   title,
   description,
   isEmpty = false,
-  emptyMessage = "No items found.",
+  emptyMessage = 'No items found.',
   emptyDescription,
   icon,
 }: WabaPageLayoutProps) {
   return (
-    <SidebarLayout user_id={user_id} logo_url={logo_url} app_name={app_name}>
+    <SidebarLayout userId={userId} logoUrl={logoUrl} appName={appName}>
       <div className="p-6">
         <div className="mb-6">
           <h1 className="text-xl font-bold text-gray-900">{title}</h1>

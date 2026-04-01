@@ -3,9 +3,12 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 'use client';
-import Ably from 'ably';
+
 import { useState, useEffect } from 'react';
+
+import Ably from 'ably';
 import { Radio, Clock, CheckCircle2, ChevronDown, ChevronUp, Wifi } from 'lucide-react';
+
 import { cn } from '@/lib/utils';
 
 interface WebhookEntry {
@@ -45,10 +48,12 @@ function WebhookRow({ webhook, index }: { webhook: WebhookEntry; index: number }
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-[13px] font-semibold text-gray-900">{fieldLabel}</span>
-            <span className={cn(
-              'text-[10px] font-semibold px-1.5 py-0.5 rounded-full',
-              webhook.status === 200 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
-            )}>
+            <span
+              className={cn(
+                'text-[10px] font-semibold px-1.5 py-0.5 rounded-full',
+                webhook.status === 200 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700',
+              )}
+            >
               {webhook.status}
             </span>
           </div>
@@ -89,14 +94,14 @@ export default function LiveWebhooks() {
       status: 200,
       payload: data,
     };
-    setWebhooks((old_state) => [entry, ...old_state]);
+    setWebhooks((oldState) => [entry, ...oldState]);
   }
 
   useEffect(() => {
     setIsMounted(true);
     const ablyClient = new Ably.Realtime({
       authCallback: async (_, callback) => {
-        fetch('/api/ably_auth')
+        fetch('/api/ably-auth')
           .then((response) => response.json())
           .then((tokenRequest) => callback(null, tokenRequest))
           .catch((error) => callback(error, null));
@@ -107,6 +112,7 @@ export default function LiveWebhooks() {
     const channel = ablyClient.channels.get('get-started');
     channel.subscribe('first', (message) => addWebhook(message.data));
     return function cleanup() {
+      channel.unsubscribe();
       ablyClient.close();
     };
   }, []);
@@ -115,12 +121,16 @@ export default function LiveWebhooks() {
 
   return (
     <div>
-      <div className={cn(
-        'inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[12px] font-medium mb-5',
-        connected ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
-      )}>
+      <div
+        className={cn(
+          'inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[12px] font-medium mb-5',
+          connected
+            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+            : 'bg-amber-50 text-amber-700 border border-amber-200',
+        )}
+      >
         <span className={cn('w-1.5 h-1.5 rounded-full animate-pulse', connected ? 'bg-emerald-500' : 'bg-amber-500')} />
-        {connected ? 'Connected \u2014 listening for events' : 'Connecting...'}
+        {connected ? 'Connected — listening for events' : 'Connecting...'}
         <Wifi className="w-3 h-3" />
       </div>
 

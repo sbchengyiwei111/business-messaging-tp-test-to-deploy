@@ -3,11 +3,12 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-
-"use client"
+'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { feGraphApiPostWrapper } from '@/app/fe_utils';
+
+import { feGraphApiPostWrapper } from '@/app/feUtils';
+import { cn } from '@/lib/utils';
 
 interface PhoneRegistrationModalProps {
   phone: {
@@ -23,7 +24,11 @@ interface PhoneRegistrationModalProps {
 
 type Step = 'request' | 'verify' | 'register' | 'done';
 
-export default function PhoneRegistrationModal({ phone, onClose, onRegistrationComplete }: PhoneRegistrationModalProps) {
+export default function PhoneRegistrationModal({
+  phone,
+  onClose,
+  onRegistrationComplete,
+}: PhoneRegistrationModalProps) {
   const [step, setStep] = useState<Step>(() => {
     if (phone.status === 'CONNECTED') return 'done';
     if (phone.code_verification_status === 'VERIFIED') return 'register';
@@ -40,13 +45,13 @@ export default function PhoneRegistrationModal({ phone, onClose, onRegistrationC
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
-    if (resendTimer <= 0) return;
+    if (resendTimer <= 0) return undefined;
     const timer = setTimeout(() => setResendTimer(resendTimer - 1), 1000);
     return () => clearTimeout(timer);
   }, [resendTimer]);
 
   useEffect(() => {
-    if (otpExpiry <= 0) return;
+    if (otpExpiry <= 0) return undefined;
     const timer = setTimeout(() => {
       const next = otpExpiry - 1;
       setOtpExpiry(next);
@@ -78,7 +83,7 @@ export default function PhoneRegistrationModal({ phone, onClose, onRegistrationC
     setIsLoading(true);
     setError(null);
     try {
-      await feGraphApiPostWrapper('/api/request_code', {
+      await feGraphApiPostWrapper('/api/request-code', {
         waba_id: phone.wabaId,
         phone_number_id: phone.id,
       });
@@ -99,14 +104,14 @@ export default function PhoneRegistrationModal({ phone, onClose, onRegistrationC
     setIsLoading(true);
     setError(null);
     try {
-      await feGraphApiPostWrapper('/api/verify_code', {
+      await feGraphApiPostWrapper('/api/verify-code', {
         wabaId: phone.wabaId,
         phoneId: phone.id,
         otpCode,
       });
       setStep('register');
     } catch (err: unknown) {
-      setAttempts(prev => prev - 1);
+      setAttempts((prev) => prev - 1);
       const errMsg = (err as { message?: string; code?: string })?.message ?? (err as { code?: string })?.code ?? '';
       if (/expired/i.test(errMsg)) {
         setError('Your code has expired. Please request a new one.');
@@ -152,10 +157,7 @@ export default function PhoneRegistrationModal({ phone, onClose, onRegistrationC
         className="bg-white rounded-xl shadow-2xl max-w-md w-full mx-4 p-6 relative"
         onClick={(e) => e.stopPropagation()}
       >
-        <button
-          className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"
-          onClick={onClose}
-        >
+        <button className="absolute top-4 right-4 text-gray-400 hover:text-gray-600" onClick={onClose}>
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
@@ -181,7 +183,8 @@ export default function PhoneRegistrationModal({ phone, onClose, onRegistrationC
           <div className="space-y-4">
             <h2 className="text-lg font-semibold text-gray-900">Verify your phone number</h2>
             <p className="text-sm text-gray-600">
-              We sent a verification code to {phone.display_phone_number}. It may take a few moments to arrive. To verify your number, enter the 6-digit code.
+              We sent a verification code to {phone.display_phone_number}. It may take a few moments to arrive. To
+              verify your number, enter the 6-digit code.
             </p>
 
             {otpExpired ? (
@@ -203,7 +206,9 @@ export default function PhoneRegistrationModal({ phone, onClose, onRegistrationC
                     {digits.map((digit, i) => (
                       <input
                         key={i}
-                        ref={(el) => { inputRefs.current[i] = el; }}
+                        ref={(el) => {
+                          inputRefs.current[i] = el;
+                        }}
                         type="text"
                         inputMode="numeric"
                         className="w-11 h-12 text-center text-xl font-semibold border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
@@ -219,7 +224,7 @@ export default function PhoneRegistrationModal({ phone, onClose, onRegistrationC
 
                 <div className="flex items-center justify-between text-sm">
                   <button
-                    className={`text-blue-600 hover:text-blue-800 ${resendTimer > 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    className={cn('text-blue-600 hover:text-blue-800', resendTimer > 0 && 'opacity-50 cursor-not-allowed')}
                     onClick={handleRequestCode}
                     disabled={resendTimer > 0 || isLoading}
                   >
@@ -240,7 +245,7 @@ export default function PhoneRegistrationModal({ phone, onClose, onRegistrationC
                 <button
                   className="w-full px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
                   onClick={handleVerifyCode}
-                  disabled={isLoading || digits.some(d => !d) || attempts === 0}
+                  disabled={isLoading || digits.some((d) => !d) || attempts === 0}
                 >
                   {isLoading ? 'Verifying...' : 'Next'}
                 </button>

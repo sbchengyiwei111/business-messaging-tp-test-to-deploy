@@ -3,56 +3,87 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+import { NextResponse, type NextRequest } from 'next/server';
 
-import { NextResponse, type NextRequest } from 'next/server'
-import { getToken, saveTokens, registerNumber, subscribeWebhook } from "../be_utils"
-import { wrapFn, skipProm } from "../../errorformat";
-import { withAuth } from "../auth_wrapper";
+import { getToken, saveTokens, registerNumber, subscribeWebhook } from '@/app/api/beUtils';
+import { wrapFn, skipProm } from '@/app/errorformat';
+import { withAuth } from '@/app/api/authWrapper';
 
-export const POST = withAuth(async function myApiRoute(request: NextRequest, session) {
-    const user = session.user;
-    console.log("this is the user', user", user.email);
+export const POST = withAuth(async function exchangeToken(request: NextRequest, session) {
+  const user = session.user;
 
-    const user_id = user.email;
+  const userId = user.email;
 
+  const data = await request.json();
 
-    const data = await request.json();
+  const {
+    code,
+    waba_id: wabaId,
+    waba_ids: rawWabaIds,
+    business_id: businessId,
+    ad_account_ids: rawAdAccountIds,
+    page_ids: rawPageIds,
+    dataset_ids: rawDatasetIds,
+    catalog_ids: rawCatalogIds,
+    instagram_account_ids: rawInstagramAccountIds,
+    app_id: appId,
+    phone_number_id: phoneNumberId,
+    es_option_reg: esOptionReg,
+    es_option_loc: _esOptionLoc,
+    es_option_sys: _esOptionSys,
+    es_option_sub: esOptionSub,
+  } = data;
 
-    console.log("/token", "incoming data", data);
+  // Default arrays to [] and construct wabaIds from singular wabaId if needed
+  const wabaIds = rawWabaIds || (wabaId ? [wabaId] : []);
+  const pageIds = rawPageIds || [];
+  const adAccountIds = rawAdAccountIds || [];
+  const datasetIds = rawDatasetIds || [];
+  const catalogIds = rawCatalogIds || [];
+  const instagramAccountIds = rawInstagramAccountIds || [];
 
-    const { code, waba_id, waba_ids: rawWabaIds, business_id, ad_account_ids: rawAdAccountIds, page_ids: rawPageIds, dataset_ids: rawDatasetIds, catalog_ids: rawCatalogIds, instagram_account_ids: rawInstagramAccountIds, app_id, phone_number_id, es_option_reg, es_option_loc, es_option_sys, es_option_sub } = data;
+  if (!code || typeof code !== 'string') {
+    return NextResponse.json({ error: 'Missing or invalid code' }, { status: 400 });
+  }
+  if (!appId || typeof appId !== 'string') {
+    return NextResponse.json({ error: 'Missing or invalid app_id' }, { status: 400 });
+  }
 
-    // Default arrays to [] and construct waba_ids from singular waba_id if needed
-    const waba_ids = rawWabaIds || (waba_id ? [waba_id] : []);
-    const page_ids = rawPageIds || [];
-    const ad_account_ids = rawAdAccountIds || [];
-    const dataset_ids = rawDatasetIds || [];
-    const catalog_ids = rawCatalogIds || [];
-    const instagram_account_ids = rawInstagramAccountIds || [];
-
-    console.log("/token", "waba_ids", waba_ids, "app_id", app_id, "phone_number_id", phone_number_id, "es_option_reg", es_option_reg, "es_option_loc", es_option_loc, "es_option_sys", es_option_sys, "es_option_sub", es_option_sub);
-
-    let response = null;
-
-    try {
-        const result = await Promise.all([
-            wrapFn(getToken(code, app_id), "getToken")
-                .then(([{ fun, status, result, error }]) => {
-                    const access_token = result;
-                    return Promise.all([
-                        wrapFn(saveTokens(user_id, app_id, business_id, page_ids, ad_account_ids, waba_ids, dataset_ids, catalog_ids, instagram_account_ids, access_token), "saveTokens"),
-                        (es_option_reg && phone_number_id) ? wrapFn(registerNumber(phone_number_id, access_token), "registerNumber") : skipProm('registerNumber'),
-                        (es_option_sub) ? wrapFn(subscribeWebhook(access_token, waba_id), "subscribeWebhook") : skipProm('subscribeWebhook')
-                    ])
-                        .then(response => [{ fun, status, result: '***', error }, response]);
-
-                }),
-        ])
-        response = new NextResponse(JSON.stringify(result, null, 2));
-    } catch (e) {
-        console.log("error", e);
-        response = new NextResponse(JSON.stringify(e, null, 2), { status: 500 });
-    }
-
-    return response;
+  try {
+    const result = await Promise.all([
+      wrapFn(getToken(code, appId), 'getToken').then(([{ fun, status, result, error }]) => {
+        if (status !== 'completed' || !result) {
+          throw new Error(`getToken ${status}: ${error}`);
+        }
+        const accessToken = result as string;
+        return Promise.all([
+          wrapFn(
+            saveTokens(
+              userId,
+              appId,
+              businessId,
+              pageIds,
+              adAccountIds,
+              wabaIds,
+              datasetIds,
+              catalogIds,
+              instagramAccountIds,
+              accessToken,
+            ),
+            'saveTokens',
+          ),
+          esOptionReg && phoneNumberId
+            ? wrapFn(registerNumber(phoneNumberId, accessToken), 'registerNumber')
+            : skipProm('registerNumber'),
+          esOptionSub
+            ? wrapFn(subscribeWebhook(accessToken, wabaId), 'subscribeWebhook')
+            : skipProm('subscribeWebhook'),
+        ]).then((response) => [{ fun, status, result: '***', error }, response]);
+      }),
+    ]);
+    return NextResponse.json(result);
+  } catch (error) {
+    console.error('Failed to exchange token:', error);
+    return NextResponse.json({ error: 'Failed to exchange token' }, { status: 500 });
+  }
 });

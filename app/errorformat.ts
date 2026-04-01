@@ -3,7 +3,6 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-
 // ============================================================================
 // ERROR FORMATTING UTILITIES
 // ============================================================================
@@ -13,13 +12,12 @@
 // ============================================================================
 // CONSTANTS
 // ============================================================================
-const arrow_right = " \u{2192} ";  // Right arrow for sequential operations
-const arrow_down = " \u{21B3} ";   // Down arrow for parallel operations
+const arrowRight = ' \u{2192} '; // Right arrow for sequential operations
+const arrowDown = ' \u{21B3} '; // Down arrow for parallel operations
 
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
-
 
 // ============================================================================
 // CORE PARSING FUNCTIONS
@@ -32,19 +30,26 @@ const arrow_down = " \u{21B3} ";   // Down arrow for parallel operations
  * @param parallel - Array of parallel operations
  * @returns Formatted string with parallel operations
  */
-function parseP(str: string, indent: string, parallel: any[]): string {
-    parallel.forEach(function (serial, i) {
-        if (i === 0) {
-            // First parallel operation uses right arrow
-            str += arrow_right;
-            str += parseS("", indent, serial);
-        } else {
-            // Subsequent parallel operations use down arrow
-            str += indent + arrow_down;
-            str += parseS("", indent, serial);
-        }
-    });
-    return str;
+interface OperationStatus {
+  fun: string;
+  status: string;
+  result: unknown;
+  error: unknown;
+}
+
+function parseP(str: string, indent: string, parallel: (OperationStatus | OperationStatus[])[]): string {
+  parallel.forEach(function (serial, i) {
+    if (i === 0) {
+      // First parallel operation uses right arrow
+      str += arrowRight;
+      str += parseS('', indent, serial);
+    } else {
+      // Subsequent parallel operations use down arrow
+      str += indent + arrowDown;
+      str += parseS('', indent, serial);
+    }
+  });
+  return str;
 }
 
 /**
@@ -54,28 +59,33 @@ function parseP(str: string, indent: string, parallel: any[]): string {
  * @param serial - Array of serial operations
  * @returns Formatted string with serial operations
  */
-function parseS(str: string, indent: string, serial: any[]): string {
-    serial.forEach(function (serialItem, i) {
-        if (Array.isArray(serialItem)) {
-            // If item is an array, it contains parallel operations
-            str += parseP("", indent, serialItem);
-        } else {
-            // If item is not an array, it's a single operation
-            if (i > 0) str += arrow_right;  // Add separator between operations
+function parseS(
+  str: string,
+  indent: string,
+  serial: OperationStatus | OperationStatus[] | (OperationStatus | OperationStatus[])[],
+): string {
+  const items = Array.isArray(serial) ? serial : [serial];
+  items.forEach(function (serialItem: OperationStatus | OperationStatus[], i: number) {
+    if (Array.isArray(serialItem)) {
+      // If item is an array, it contains parallel operations
+      str += parseP('', indent, serialItem);
+    } else {
+      // If item is not an array, it's a single operation
+      if (i > 0) str += arrowRight; // Add separator between operations
 
-            const content = `${serialItem.status} (${serialItem.fun})`;
-            str += content;
+      const content = `${serialItem.status} (${serialItem.fun})`;
+      str += content;
 
-            // Increase indentation for next level
-            indent += ' '.repeat(content.length + 3);
+      // Increase indentation for next level
+      indent += ' '.repeat(content.length + 3);
 
-            // Add newline at the end of a serial sequence
-            if (i === serial.length - 1) {
-                str += "\n";
-            }
-        }
-    });
-    return str;
+      // Add newline at the end of a serial sequence
+      if (i === items.length - 1) {
+        str += '\n';
+      }
+    }
+  });
+  return str;
 }
 
 // ============================================================================
@@ -87,8 +97,8 @@ function parseS(str: string, indent: string, serial: any[]): string {
  * @param data - Array of operations with status and function names
  * @returns Formatted string representation
  */
-function formatErrors(data: any[]): string {
-    return parseP("", "", data);
+function formatErrors(data: (OperationStatus | OperationStatus[])[]): string {
+  return parseP('', '', data);
 }
 
 /**
@@ -97,25 +107,24 @@ function formatErrors(data: any[]): string {
  * @param label - Label for the operation
  * @returns Promise that resolves to status object
  */
-function wrapFn(promise: Promise<any>, label: string): Promise<any[]> {
-    return promise
-        .then(data => {
-            return [{ fun: label, status: "completed", result: data, error: null }];
-        })
-        .catch(err => {
-            console.error(err);
-            return [{ fun: label, status: "failed", result: null, error: err }];
-        });
+function wrapFn(promise: Promise<unknown>, label: string): Promise<OperationStatus[]> {
+  return promise
+    .then((data) => {
+      return [{ fun: label, status: 'completed', result: data, error: null as unknown }];
+    })
+    .catch((err: unknown) => {
+      console.error(err);
+      return [{ fun: label, status: 'failed', result: null as unknown, error: err }];
+    });
 }
-
 
 /**
  * Creates a skipped operation status (for operations that are intentionally not executed)
  * @param label - Label for the skipped operation
  * @returns Status object indicating skipped operation
  */
-function skipProm(label: string): any[] {
-    return [{ fun: label, status: "skipped", result: null, error: null }];
+function skipProm(label: string): OperationStatus[] {
+  return [{ fun: label, status: 'skipped', result: null, error: null }];
 }
 
 // ============================================================================

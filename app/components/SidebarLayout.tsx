@@ -2,70 +2,90 @@
 //
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
-"use client";
+'use client';
 
-import { ReactNode } from "react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import type { ReactNode } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import {
-  Settings, Webhook, MessageSquare, Building2, FileText,
-  Megaphone, Database, BookOpen, Instagram,
-} from "lucide-react";
+  Settings,
+  Webhook,
+  MessageSquare,
+  Building2,
+  FileText,
+  Megaphone,
+  Database,
+  BookOpen,
+  Instagram, Mail,
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface SidebarLayoutProps {
   children: ReactNode;
-  user_id: string;
-  logo_url?: string;
-  app_name: string;
+  userId: string;
+  logoUrl?: string;
+  appName: string;
 }
 
 const navSections = [
   {
-    title: "Developer Tools",
+    title: 'Developer Tools',
     items: [
       {
-        label: "Configuration",
-        description: "Configure onboarding settings",
-        href: "/",
+        label: 'Configuration',
+        description: 'Configure onboarding settings',
+        href: '/',
         Icon: Settings,
       },
       {
-        label: "My Webhooks",
-        description: "Debug tool showing all your incoming webhooks",
-        href: "/my_webhooks",
+        label: 'My Webhooks',
+        description: 'Debug tool showing all your incoming webhooks',
+        href: '/my-webhooks',
         Icon: Webhook,
+      },
+      {
+        label: "Send Template Message",
+        description: "Send paid template messages via WhatsApp",
+        href: "/paid_messaging",
+        Icon: Mail,
       },
     ],
   },
   {
-    title: "Sample Products",
+    title: 'Sample Products',
     items: [
       {
-        label: "My Inbox",
-        description: "Send and receive messages across all your phone numbers",
-        href: "/my_inbox",
+        label: 'My Inbox',
+        description: 'Send and receive messages across all your phone numbers',
+        href: '/my-inbox',
         Icon: MessageSquare,
       },
     ],
   },
   {
-    title: "My Assets",
+    title: 'My Assets',
     items: [
-      { label: "My WABAs", description: "View all your WABAs", href: "/my_wabas", Icon: Building2 },
-      { label: "My Pages", description: "View all your Facebook Pages", href: "/my_pages", Icon: FileText },
-      { label: "My Ad Accounts", description: "View all your Facebook Ad Accounts", href: "/my_ad_accounts", Icon: Megaphone },
-      { label: "My Datasets", description: "View all your Facebook Datasets", href: "/my_datasets", Icon: Database },
-      { label: "My Catalogs", description: "View all your Facebook Catalogs", href: "/my_catalogs", Icon: BookOpen },
-      { label: "My Instagram Accounts", description: "View all your Instagram Accounts", href: "/my_instagram_accounts", Icon: Instagram },
+      { label: 'My WABAs', description: 'View all your WABAs', href: '/my-wabas', Icon: Building2 },
+      { label: 'My Pages', description: 'View all your Facebook Pages', href: '/my-pages', Icon: FileText },
+      {
+        label: 'My Ad Accounts',
+        description: 'View all your Facebook Ad Accounts',
+        href: '/my-ad-accounts',
+        Icon: Megaphone,
+      },
+      { label: 'My Datasets', description: 'View all your Facebook Datasets', href: '/my-datasets', Icon: Database },
+      { label: 'My Catalogs', description: 'View all your Facebook Catalogs', href: '/my-catalogs', Icon: BookOpen },
+      {
+        label: 'My Instagram Accounts',
+        description: 'View all your Instagram Accounts',
+        href: '/my-instagram-accounts',
+        Icon: Instagram,
+      },
     ],
   },
 ];
 
-export default function SidebarLayout({
-  children,
-  user_id,
-  app_name,
-}: SidebarLayoutProps) {
+export default function SidebarLayout({ children, userId, appName }: SidebarLayoutProps) {
   const pathname = usePathname();
 
   return (
@@ -80,7 +100,7 @@ export default function SidebarLayout({
             viewBox="0 0 256 256"
             fill="none"
             xmlns="http://www.w3.org/2000/svg"
-            aria-label={app_name}
+            aria-label={appName}
             className="flex-shrink-0"
           >
             <defs>
@@ -97,11 +117,13 @@ export default function SidebarLayout({
             {/* Lightning bolt — centered */}
             <path d="M137 55L96 119H128L110 165L160 101H128L137 55Z" fill="white" />
           </svg>
-          <span className="font-semibold text-slate-700 tracking-tight">{app_name}</span>
+          <span className="font-semibold text-slate-700 tracking-tight">{appName}</span>
         </div>
         <div className="flex items-center gap-5">
-          <a href="/privacy" className="text-sm text-slate-500 hover:text-slate-700 transition-colors">Privacy Policy</a>
-          <span className="text-sm font-medium text-slate-600">{user_id}</span>
+          <a href="/privacy" className="text-sm text-slate-500 hover:text-slate-700 transition-colors">
+            Privacy Policy
+          </a>
+          <span className="text-sm font-medium text-slate-600">{userId}</span>
 
           <a
             href="/auth/logout"
@@ -109,8 +131,12 @@ export default function SidebarLayout({
           >
             Logout
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+              />
             </svg>
           </a>
         </div>
@@ -127,16 +153,17 @@ export default function SidebarLayout({
                 </h3>
                 <div className="space-y-0.5">
                   {section.items.map((item) => {
-                    const isActive = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+                    const isActive = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
                     return (
                       <Link
                         key={item.href}
                         href={item.href}
-                        className={`flex items-start gap-3 px-5 py-2 text-sm transition-colors ${
-                          isActive ? "bg-[#e4e6ea]" : "hover:bg-[#e4e6ea]"
-                        }`}
+                        className={cn(
+                          'flex items-start gap-3 px-5 py-2 text-sm transition-colors',
+                          isActive ? 'bg-[#e4e6ea]' : 'hover:bg-[#e4e6ea]',
+                        )}
                       >
-                        <span className={`mt-0.5 flex-shrink-0 ${isActive ? "text-indigo-500" : "text-slate-400"}`}>
+                        <span className={cn('mt-0.5 flex-shrink-0', isActive ? 'text-indigo-500' : 'text-slate-400')}>
                           <item.Icon className="w-4 h-4" />
                         </span>
                         <div>
@@ -144,9 +171,7 @@ export default function SidebarLayout({
                             {item.label}
                           </span>
                           {item.description && (
-                            <p className="text-[12px] text-gray-400 mt-0.5 leading-snug">
-                              {item.description}
-                            </p>
+                            <p className="text-[12px] text-gray-400 mt-0.5 leading-snug">{item.description}</p>
                           )}
                         </div>
                       </Link>
