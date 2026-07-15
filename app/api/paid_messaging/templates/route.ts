@@ -4,39 +4,45 @@
 // LICENSE file in the root directory of this source tree.
 
 import { type NextRequest, NextResponse } from 'next/server';
-import { getTokenForWabaByUser, getMessageTemplates } from "../../beUtils";
-import { withAuth } from "../../authWrapper";
-import publicConfig from "@/app/publicConfig";
 
-export const GET = withAuth(async function templatesRoute(request: NextRequest, session: any) {
+import { getTokenForWabaByUser, getMessageTemplates, getTemplateGatingData } from '@/app/api/beUtils';
+import { withAuth } from '@/app/api/authWrapper';
+import type { AuthSession } from '@/app/api/authWrapper';
+import publicConfig from '@/app/publicConfig';
+
+export const GET = withAuth(async function templatesRoute(request: NextRequest, session: AuthSession) {
+  try {
     const { searchParams } = new URL(request.url);
-    const waba_id = searchParams.get('waba_id');
+    const wabaId = searchParams.get('waba_id');
 
-    if (!waba_id) {
-        return NextResponse.json(
-            { error: 'waba_id query parameter is required' },
-            { status: 400 }
-        );
+    if (!wabaId) {
+      return NextResponse.json(
+        { error: 'waba_id query parameter is required' },
+        { status: 400 }
+      );
     }
 
-    const user_id = session.user.email;
-    const app_id = publicConfig.appId;
+    const userId = session.user.email;
+    const appId = publicConfig.appId;
 
-    const access_token = await getTokenForWabaByUser(waba_id, user_id, app_id);
-    if (!access_token) {
-        return NextResponse.json(
-            { error: 'You do not have access to this WABA' },
-            { status: 403 }
-        );
+    const accessToken = await getTokenForWabaByUser(wabaId, userId, appId);
+    if (!accessToken) {
+      return NextResponse.json(
+        { error: 'You do not have access to this WABA' },
+        { status: 403 }
+      );
     }
 
-    try {
-        const templates = await getMessageTemplates(waba_id, access_token);
-        return NextResponse.json({ templates });
-    } catch (error: any) {
-        return NextResponse.json(
-            { error: error.message || 'Failed to fetch templates' },
-            { status: 500 }
-        );
-    }
+    const [templates, gating] = await Promise.all([
+      getMessageTemplates(wabaId, accessToken),
+      getTemplateGatingData(wabaId, accessToken),
+    ]);
+    return NextResponse.json({ templates, gating });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to fetch templates';
+    return NextResponse.json(
+      { error: message },
+      { status: 500 }
+    );
+  }
 });

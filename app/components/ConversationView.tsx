@@ -2,18 +2,17 @@
 //
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
+
 'use client';
 
 import { useEffect, useRef } from 'react';
 
-import MessageBubble from '@/app/components/MessageBubble';
+import { Phone, Clock, PhoneMissed } from 'lucide-react';
+import MessageBubble, { type Message } from '@/app/components/MessageBubble';
 import SendMessage from '@/app/components/SendMessage';
-
-export type Message = {
-  text: string;
-  direction: 'incoming' | 'outgoing';
-  timestamp: number;
-};
+import CallPermissionRibbon from '@/app/components/CallPermissionRibbon';
+import type { PermissionState } from '@/app/types/calling';
+import { cn } from '@/lib/utils';
 
 interface ConversationViewProps {
   chatId: string;
@@ -23,9 +22,31 @@ interface ConversationViewProps {
   phoneDisplay: string;
   isAckBotEnabled: boolean;
   onToggleAckBot: () => void;
+  onCallClick?: () => void;
+  callActive?: boolean;
+  permissionState?: PermissionState;
+  permissionExpirationTime?: number;
+  permissionRemainingRequests?: string;
+  onRequestPermission?: () => void;
+  hasMissedCall?: boolean;
+  onCallBack?: () => void;
 }
 
-export default function ConversationView({ displayName, messages, onSendMessage }: ConversationViewProps) {
+export type { Message };
+
+export default function ConversationView({
+  displayName,
+  messages,
+  onSendMessage,
+  onCallClick,
+  callActive,
+  permissionState,
+  permissionExpirationTime,
+  permissionRemainingRequests,
+  onRequestPermission,
+  hasMissedCall,
+  onCallBack,
+}: ConversationViewProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -42,12 +63,64 @@ export default function ConversationView({ displayName, messages, onSendMessage 
           <div className="text-sm font-semibold text-gray-900">{displayName}</div>
           <div className="text-xs text-gray-400">WhatsApp</div>
         </div>
+        {onCallClick && (
+          <button
+            onClick={onCallClick}
+            disabled={callActive || (!!permissionState && permissionState !== 'none' && permissionState !== 'granted')}
+            className={cn(
+              'ml-auto relative p-2.5 rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed',
+              !permissionState || permissionState === 'none' || permissionState === 'granted'
+                ? 'text-green-600 hover:bg-green-50'
+                : 'text-gray-400 hover:bg-gray-50',
+            )}
+            aria-label={
+              callActive ? 'Call in progress' :
+              permissionState === 'granted' && permissionExpirationTime
+                ? 'Temporary permission — click to call'
+                : permissionState === 'checking'
+                  ? 'Checking permissions...'
+                  : permissionState === 'requesting' || permissionState === 'denied' || permissionState === 'rate_limited'
+                    ? 'No call permission'
+                    : 'Start call'
+            }
+          >
+            <Phone className="w-5 h-5" aria-hidden="true" />
+            {permissionState === 'granted' && permissionExpirationTime && (
+              <Clock className="w-2.5 h-2.5 absolute -top-0.5 -right-0.5 text-amber-500" aria-hidden="true" />
+            )}
+          </button>
+        )}
       </div>
 
+      {/* Permission ribbon */}
+      {permissionState && permissionState !== 'none' && onRequestPermission && (
+        <CallPermissionRibbon
+          permissionState={permissionState}
+          expirationTime={permissionExpirationTime}
+          remainingRequests={permissionRemainingRequests}
+          onRequestPermission={onRequestPermission}
+        />
+      )}
+
+      {/* Missed call — call back suggestion */}
+      {hasMissedCall && onCallBack && !callActive && (
+        <div role="alert" className="px-4 py-2 flex items-center justify-between border-b bg-red-50 border-red-200 text-xs">
+          <div className="flex items-center gap-2">
+            <PhoneMissed className="w-3.5 h-3.5 text-red-500" />
+            <span className="font-medium text-red-700">Missed call from {displayName}</span>
+          </div>
+          <button
+            onClick={onCallBack}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-red-600 text-white hover:bg-red-700 transition-colors"
+          >
+            <Phone className="w-3 h-3" />
+            Call back
+          </button>
+        </div>
+      )}
+
       {/* Messages */}
-      <div
-        className="flex-1 overflow-y-auto px-5 py-4 space-y-0.5 bg-gradient-to-b from-[#f8f9ff] to-[#f1f3f9]"
-      >
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-0.5 bg-gradient-to-b from-[#f8f9ff] to-[#f1f3f9]">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <div className="w-14 h-14 rounded-full bg-white shadow-sm flex items-center justify-center mb-4">
@@ -66,7 +139,7 @@ export default function ConversationView({ displayName, messages, onSendMessage 
         ) : (
           <>
             {messages.map((msg, i) => (
-              <MessageBubble key={i} text={msg.text} direction={msg.direction} timestamp={msg.timestamp} />
+              <MessageBubble key={i} {...msg} />
             ))}
             <div ref={messagesEndRef} />
           </>

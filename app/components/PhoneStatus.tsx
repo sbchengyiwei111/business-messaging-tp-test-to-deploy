@@ -5,10 +5,10 @@
 
 'use client';
 
-import { feGraphApiPostWrapper } from '@/app/feUtils';
 import { useState, useEffect } from 'react';
+
+import { feGraphApiPostWrapper } from '@/app/feUtils';
 import type { PhoneDetails } from '@/app/types/api';
-import { cn } from '@/lib/utils';
 
 export default function PhoneStatus({
   phone,
@@ -22,49 +22,59 @@ export default function PhoneStatus({
   externalStatus?: string;
 }) {
   const [status, setStatus] = useState(phone.status);
+  const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
     if (externalStatus && externalStatus !== status) {
       setStatus(externalStatus);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when the parent passes a new externalStatus, not when local status changes
   }, [externalStatus]);
   const [isLoading, setIsLoading] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
 
-  // Map raw Meta status to display label
+  // Map raw Meta status to display label.
+  // Priority: NOT_VERIFIED (never OTP-verified) → UNVERIFIED
+  //           PENDING (OTP-verified, awaiting Meta review) → DISCONNECTED
+  //           otherwise → status as-is
   const displayStatus =
-    status === 'PENDING' || phone.code_verification_status === 'NOT_VERIFIED' ? 'UNVERIFIED' : status;
+    phone.code_verification_status === 'NOT_VERIFIED' ? 'UNVERIFIED' :
+    status === 'PENDING' ? 'DISCONNECTED' : status;
 
   let tooltipMsg = null;
 
-  if (status === 'CONNECTED') {
+  if (errorMsg) {
+    tooltipMsg = errorMsg;
+  } else if (status === 'CONNECTED') {
     tooltipMsg = 'Click to disconnect';
-  } else if (status === 'DISCONNECTED' && phone.code_verification_status === 'VERIFIED') {
-    tooltipMsg = 'Click to reconnect';
-  } else if (status === 'DISCONNECTED' || status === 'PENDING') {
+  } else if (phone.code_verification_status === 'NOT_VERIFIED') {
+    // Phone has never completed OTP verification — must verify first
     tooltipMsg = 'Verify phone number to connect';
+  } else if (status === 'PENDING' || (status === 'DISCONNECTED' && phone.code_verification_status === 'VERIFIED')) {
+    // PENDING = already OTP-verified, awaiting Meta review
+    // DISCONNECTED + VERIFIED = previously connected, can reconnect
+    tooltipMsg = 'Click to reconnect';
   } else {
     tooltipMsg = `Status: ${status}`;
   }
 
-  const onClickHandlerWrapper = () => {
+  const onClickHandlerWrapper = async () => {
     if (status === 'CONNECTED') {
       setIsLoading(true);
-      feGraphApiPostWrapper(`/api/deregister`, {
-        wabaId: phone.wabaId,
-        phoneId: phone.id,
-      })
-        .then(() => {
-          setStatus('DISCONNECTED');
-          onStatusChange?.('DISCONNECTED');
-        })
-        .catch((error) => {
-          console.error('Failed to deregister phone:', error);
-        })
-        .finally(() => {
-          setIsLoading(false);
+      setErrorMsg('');
+      try {
+        await feGraphApiPostWrapper('/api/deregister', {
+          wabaId: phone.wabaId,
+          phoneId: phone.id,
         });
+        setStatus('DISCONNECTED');
+        onStatusChange?.('DISCONNECTED');
+      } catch (error) {
+        console.error('Failed to deregister phone:', error);
+        setErrorMsg('Failed to disconnect');
+      } finally {
+        setIsLoading(false);
+      }
     } else {
       onRegisterClick?.();
     }
@@ -91,16 +101,14 @@ export default function PhoneStatus({
       {/* Wrap in group so tooltip shows on hover of the whole area */}
       <div className="relative" onMouseEnter={() => setShowTooltip(true)} onMouseLeave={() => setShowTooltip(false)}>
         <div
-          className={cn(
-                    'whitespace-normal text-left rounded-md px-2.5 py-1 mr-1 text-[11px] font-semibold',
-                    'cursor-pointer transition-all duration-200 ease-in-out',
-                    'hover:shadow-md hover:scale-105 active:scale-95',
-                    'border border-gray-200 hover:border-gray-300',
-                    'flex items-center justify-center',
-                    isLoading ? 'opacity-70' : 'opacity-100',
-                    statusColor,
-                    'h-7',
-                  )}
+          className={`whitespace-normal text-left rounded-md px-2.5 py-1 mr-1 text-[11px] font-semibold
+                    cursor-pointer transition-all duration-200 ease-in-out
+                    hover:shadow-md hover:scale-105 active:scale-95
+                    border border-gray-200 hover:border-gray-300
+                    flex items-center justify-center
+                    ${isLoading ? 'opacity-70' : 'opacity-100'}
+                    ${statusColor}
+                    h-7`}
           onClick={onClickHandlerWrapper}
           onFocus={() => setShowTooltip(true)}
           onBlur={() => setShowTooltip(false)}

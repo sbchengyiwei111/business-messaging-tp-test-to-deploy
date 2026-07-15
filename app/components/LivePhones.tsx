@@ -10,18 +10,16 @@ import { useState, useEffect } from 'react';
 import Ably from 'ably';
 
 import SendMessage from '@/app/components/SendMessage';
-import type { ClientPhone } from '@/app/types/api';
 import { cn } from '@/lib/utils';
 
 interface LivePhonesProps {
   phoneDisplay: string;
   phoneNumberId: string;
   wabaId: string;
-  _phoneDetails: ClientPhone;
 }
 
-export default function LivePhones({ phoneDisplay, phoneNumberId, wabaId, _phoneDetails }: LivePhonesProps) {
-  const [_webhooks, setWebhooks] = useState<string[]>([]);
+export default function LivePhones({ phoneDisplay, phoneNumberId, wabaId }: LivePhonesProps) {
+  const [, setWebhooks] = useState<string[]>([]);
   const [messages, setMessages] = useState<Record<string, string[]>>({});
   const [chats, setChats] = useState<Record<string, { chatId: string; displayName: string }>>({});
 
@@ -46,31 +44,30 @@ export default function LivePhones({ phoneDisplay, phoneNumberId, wabaId, _phone
   }
 
   function handleKeyDownWrapper(chatId: string) {
-    return (message: string) => {
+    return async (message: string) => {
       const newMsg = '>> ' + message;
       addMessage(chatId, newMsg);
 
-      fetch('/api/send', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          waba_id: wabaId,
-          phone_number_id: phoneNumberId,
-          dest_phone: chatId,
-          message_content: message,
-        }),
-      })
-        .then((response) => response.json())
-        .then((data) => {
-          if (data.error) {
-            console.error('Send message failed:', data.error);
-          }
-        })
-        .catch((error) => {
-          console.error('Error:', error);
+      try {
+        const response = await fetch('/api/send', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            waba_id: wabaId,
+            phone_number_id: phoneNumberId,
+            dest_phone: chatId,
+            message_content: message,
+          }),
         });
+        const data = await response.json();
+        if (data.error) {
+          console.error('Send message failed:', data.error);
+        }
+      } catch (error) {
+        console.error('Failed to send message:', error);
+      }
     };
   }
 
@@ -83,21 +80,15 @@ export default function LivePhones({ phoneDisplay, phoneNumberId, wabaId, _phone
   useEffect(() => {
     const ablyClient = new Ably.Realtime({
       authCallback: async (_, callback) => {
-        // Make a network request to your server for tokenRequest
-        fetch('/api/ably-auth')
-          .then((response) => {
-            return response.json();
-          })
-          .then((tokenRequest) => {
-            callback(null, tokenRequest);
-          })
-          .catch((error) => {
-            callback(error, null);
-          });
+        try {
+          const response = await fetch('/api/ably-auth');
+          const tokenRequest = await response.json();
+          callback(null, tokenRequest);
+        } catch (error) {
+          callback(error, null);
+        }
       },
     });
-
-    ablyClient.connection.on('connected', () => {});
 
     // Create a channel called 'get-started' and register a listener to subscribe to all messages with the name 'first'
     const channel = ablyClient.channels.get('get-started');

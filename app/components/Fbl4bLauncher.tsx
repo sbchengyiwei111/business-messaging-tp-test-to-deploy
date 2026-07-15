@@ -16,7 +16,7 @@ interface FBL4BLauncherProps {
   appId: string;
   appName: string;
   esConfig: string;
-  onClickFbl4b: () => void;
+  onClickFbl4b: () => boolean;
   onBannerInfoChange: (info: string) => void;
   onLastEventDataChange: (data: unknown) => void;
   onSaveToken: (code: string, sessionInfo: SessionInfo) => void;
@@ -70,7 +70,8 @@ export default function FBL4BLauncher({
   };
 
   const launchWhatsAppSignup = () => {
-    onClickFbl4b();
+    const blocked = onClickFbl4b();
+    if (blocked) return;
     if (typeof FB === 'undefined') {
       onBannerInfoChange('Facebook SDK is still loading. Please try again in a moment.');
       return;
@@ -156,7 +157,7 @@ export default function FBL4BLauncher({
             }
           }
         }
-      } catch (_err) {
+      } catch {
         // Non-ES message events from Facebook iframes are expected and can be ignored
       }
     };
@@ -167,7 +168,7 @@ export default function FBL4BLauncher({
       window.removeEventListener('message', cb);
       stopPolling();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- clearEsState and stopPolling are stable refs; including them would cause unnecessary re-subscriptions
   }, [appId, onBannerInfoChange, onLastEventDataChange, onSaveToken]);
 
   return (

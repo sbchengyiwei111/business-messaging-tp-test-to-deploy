@@ -5,8 +5,9 @@
 
 'use client';
 
-import { feGraphApiPostWrapper } from '@/app/feUtils';
 import { useState, useEffect } from 'react';
+
+import { feGraphApiPostWrapper } from '@/app/feUtils';
 import type { PhoneDetails } from '@/app/types/api';
 import { cn } from '@/lib/utils';
 
@@ -16,75 +17,98 @@ export default function AckBotStatus({ phone }: { phone: PhoneDetails }) {
   const [showModal, setShowModal] = useState(false);
   const [ackMessage, setAckMessage] = useState('');
   const [showTooltip, setShowTooltip] = useState(false);
+  const [error, setError] = useState('');
 
   // Load saved message when modal opens
   useEffect(() => {
     if (showModal) {
-      fetch(`/api/phones/${phone.id}?phoneId=${phone.id}`)
-        .then((res) => res.json())
-        .then((data) => {
-          const msg = data.ackBotMessage || '';
-          setAckMessage(msg);
-        })
-        .catch((err) => console.error('Failed to load ackbot message:', err));
+      setError('');
+      (async () => {
+        try {
+          const res = await fetch(`/api/phones/${phone.id}?phoneId=${phone.id}`);
+          const data = await res.json();
+          setAckMessage(data.ackBotMessage || '');
+        } catch (err) {
+          console.error('Failed to load ackbot message:', err);
+          setError('Failed to load AckBot message');
+        }
+      })();
     }
   }, [showModal, phone.id]);
 
-  function handleToggle() {
+  async function handleToggle() {
     if (isAckBotEnabled) {
       // Disabling — just turn off, no modal needed
       setIsLoading(true);
-      feGraphApiPostWrapper(`/api/phones/${phone.id}`, {
-        isAckBotEnabled: false,
-        phoneId: phone.id,
-      })
-        .then(() => setIsAckBotEnabled(false))
-        .catch(console.error)
-        .finally(() => setIsLoading(false));
+      setError('');
+      try {
+        await feGraphApiPostWrapper(`/api/phones/${phone.id}`, {
+          isAckBotEnabled: false,
+          phoneId: phone.id,
+        });
+        setIsAckBotEnabled(false);
+      } catch (err) {
+        console.error('Failed to toggle AckBot:', err);
+        setError('Failed to disable AckBot');
+      } finally {
+        setIsLoading(false);
+      }
     } else {
       // Enabling — show modal to configure message
       setShowModal(true);
     }
   }
 
-  function handleSave() {
+  async function handleSave() {
     setIsLoading(true);
-    feGraphApiPostWrapper(`/api/phones/${phone.id}`, {
-      isAckBotEnabled: true,
-      phoneId: phone.id,
-      ackBotMessage: ackMessage,
-    })
-      .then(() => {
-        setIsAckBotEnabled(true);
-        setShowModal(false);
-      })
-      .catch(console.error)
-      .finally(() => setIsLoading(false));
+    setError('');
+    try {
+      await feGraphApiPostWrapper(`/api/phones/${phone.id}`, {
+        isAckBotEnabled: true,
+        phoneId: phone.id,
+        ackBotMessage: ackMessage,
+      });
+      setIsAckBotEnabled(true);
+      setShowModal(false);
+    } catch (err) {
+      console.error('Failed to save AckBot config:', err);
+      setError('Failed to save AckBot configuration');
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   function handleEditMessage() {
     setShowModal(true);
   }
 
-  function handleUpdateMessage() {
+  async function handleUpdateMessage() {
     setIsLoading(true);
-    feGraphApiPostWrapper(`/api/phones/${phone.id}`, {
-      isAckBotEnabled: true,
-      phoneId: phone.id,
-      ackBotMessage: ackMessage,
-    })
-      .then(() => {
-        setShowModal(false);
-      })
-      .catch(console.error)
-      .finally(() => setIsLoading(false));
+    setError('');
+    try {
+      await feGraphApiPostWrapper(`/api/phones/${phone.id}`, {
+        isAckBotEnabled: true,
+        phoneId: phone.id,
+        ackBotMessage: ackMessage,
+      });
+      setShowModal(false);
+    } catch (err) {
+      console.error('Failed to update AckBot message:', err);
+      setError('Failed to update message');
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   const statusColor = isAckBotEnabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600';
 
   return (
     <>
-      <div className="relative">
+      <div
+        className="relative"
+        onMouseEnter={() => setShowTooltip(true)}
+        onMouseLeave={() => setShowTooltip(false)}
+      >
         <div
           className={cn(
                         'whitespace-normal text-left rounded-md px-2.5 py-1 mr-1 text-[11px] font-semibold',
@@ -101,15 +125,13 @@ export default function AckBotStatus({ phone }: { phone: PhoneDetails }) {
             e.preventDefault();
             handleToggle();
           }}
-          onMouseEnter={() => setShowTooltip(true)}
-          onMouseLeave={() => setShowTooltip(false)}
           role="button"
           tabIndex={0}
         >
           {isLoading ? '...' : isAckBotEnabled ? 'AckBot On' : 'AckBot Off'}
         </div>
         {showTooltip && (
-          <div className="absolute z-50 px-3 py-2 text-xs text-slate-700 bg-white border border-slate-200 rounded-xl shadow-lg whitespace-normal -top-10 left-1/2 transform -translate-x-1/2">
+          <div className="absolute z-50 px-3 py-2 text-xs text-slate-700 bg-white border border-slate-200 rounded-xl shadow-lg whitespace-normal bottom-full mb-2 left-1/2 transform -translate-x-1/2 pointer-events-none">
             {isAckBotEnabled ? 'Click to edit message, right-click to disable' : 'Click to enable AckBot'}
             <div className="absolute w-2 h-2 bg-white border-r border-b border-slate-200 transform rotate-45 -bottom-1 left-1/2 -translate-x-1/2"></div>
           </div>
@@ -143,6 +165,12 @@ export default function AckBotStatus({ phone }: { phone: PhoneDetails }) {
                 ? 'Update the auto-reply message for incoming messages.'
                 : 'AckBot will automatically reply to incoming messages. Set a custom message or leave empty to echo the received message.'}
             </p>
+
+            {error && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-2 mb-3">
+                <p className="text-sm text-red-700">{error}</p>
+              </div>
+            )}
 
             <label className="block text-sm font-medium text-gray-700 mb-2">Auto-reply message</label>
             <textarea

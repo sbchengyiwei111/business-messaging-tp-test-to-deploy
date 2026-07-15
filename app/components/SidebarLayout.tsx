@@ -2,11 +2,13 @@
 //
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
+
 'use client';
 
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+
 import {
   Settings,
   Webhook,
@@ -45,9 +47,9 @@ const navSections = [
         Icon: Webhook,
       },
       {
-        label: "Send Template Message",
-        description: "Send paid template messages via WhatsApp",
-        href: "/paid_messaging",
+        label: 'Send Paid Messages',
+        description: 'Send paid template and Marketing Messages Lite via WhatsApp',
+        href: '/paid_messaging',
         Icon: Mail,
       },
     ],

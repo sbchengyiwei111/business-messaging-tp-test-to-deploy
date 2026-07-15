@@ -2,6 +2,7 @@
 //
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
+
 import { auth0 } from '@/lib/auth0';
 import SidebarLayout from '@/app/components/SidebarLayout';
 import LoggedOut from '@/app/components/LoggedOut';
@@ -14,7 +15,8 @@ export default async function MyWebhooks() {
   if (!session) return <LoggedOut />;
 
   const userId = session.user.email;
-  const appDetails = await getAppDetails(publicConfig.appId);
+  const appId = publicConfig.appId;
+  const appDetails = await getAppDetails(appId);
   const appName = appDetails.name;
   const logoUrl = appDetails.logo_url;
 
@@ -27,7 +29,8 @@ export default async function MyWebhooks() {
             Real-time debug view of all incoming webhook events for your app.
           </p>
         </div>
-        <LiveWebhooks />
+
+        <LiveWebhooks appId={appId ?? ''} />
       </div>
     </SidebarLayout>
   );

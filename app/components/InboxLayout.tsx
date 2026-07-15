@@ -8,14 +8,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
 import Ably from 'ably';
+import { Phone as PhoneIcon } from 'lucide-react';
 
 import PhoneListSidebar from '@/app/components/PhoneListSidebar';
 import ConversationView, { type Message } from '@/app/components/ConversationView';
 import PhoneRegistrationModal from '@/app/components/PhoneRegistrationModal';
 import PhoneStatus from '@/app/components/PhoneStatus';
 import AckBotStatus from '@/app/components/AckBotStatus';
+import CallingStatus from '@/app/components/CallingStatus';
 import type { PhoneDetails } from '@/app/types/api';
+import { CallingClient } from '@/app/components/CallingClient';
+import CallBanner, { stopRinging } from '@/app/components/CallBanner';
+import type { ActiveCallState, PermissionState } from '@/app/types/calling';
 import { cn } from '@/lib/utils';
+import { formatRemainingRequests } from '@/app/utils/calling';
 
 type ChatMeta = {
   displayName: string;
@@ -35,12 +41,51 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
 
   // Global chat metadata: { [phone_number_id]: { [chat_id]: ChatMeta } }
   const [allChats, setAllChats] = useState<Record<string, Record<string, ChatMeta>>>({});
+  // Unread tracking: { [phone_number_id]: Set<chat_id> }
+  // A chat is unread if an incoming message arrived while it was not the active view.
+  const [unreadChats, setUnreadChats] = useState<Record<string, Set<string>>>({});
+
+  // Missed call tracking: { [phone_number_id]: Set<chat_id> }
+  const [missedCallChats, setMissedCallChats] = useState<Record<string, Set<string>>>({});
+  const markMissedCall = useCallback((phoneId: string, chatId: string) => {
+    setMissedCallChats(prev => {
+      const phoneSet = new Set(prev[phoneId] ?? []);
+      phoneSet.add(chatId);
+      return { ...prev, [phoneId]: phoneSet };
+    });
+  }, []);
+  const clearMissedCall = useCallback((phoneId: string, chatId: string) => {
+    setMissedCallChats(prev => {
+      const phoneSet = new Set(prev[phoneId] ?? []);
+      phoneSet.delete(chatId);
+      return { ...prev, [phoneId]: phoneSet };
+    });
+  }, []);
 
   // OTP modal state
   const [otpModalPhone, setOtpModalPhone] = useState<PhoneDetails | null>(null);
 
+  // Call state
+  const [callState, setCallState] = useState<ActiveCallState>({ state: 'IDLE' });
+  // Per-conversation permission state: Map<chatId, {state, expirationTime?, limits?}>
+  type PermissionEntry = { state: PermissionState; expirationTime?: number; remainingRequests?: string };
+  const [permissionMap, setPermissionMap] = useState<Record<string, PermissionEntry>>({});
+  const permissionMapRef = useRef(permissionMap);
+  const callingClientRef = useRef<CallingClient | null>(null);
+  const callStateRef = useRef(callState);
+  const ringTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const endedResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    permissionMapRef.current = permissionMap;
+  }, [permissionMap]);
+  useEffect(() => {
+    callStateRef.current = callState;
+  }, [callState]);
+
   // Ably connection status: 'connecting' | 'connected' | 'disconnected' | 'failed'
   const [ablyState, setAblyState] = useState<string>('connecting');
+
 
   // Phone status tracking
   const [phoneStatuses, setPhoneStatuses] = useState<Record<string, string>>(() => {
@@ -55,10 +100,42 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
     setPhoneStatuses((prev) => ({ ...prev, [phoneId]: newStatus }));
   }, []);
 
+  // Mark a chat as unread (used when a message arrives for a non-active chat)
+  const markUnread = useCallback((phoneId: string, chatId: string) => {
+    setUnreadChats((prev) => {
+      const phoneSet = new Set(prev[phoneId] ?? []);
+      phoneSet.add(chatId);
+      return { ...prev, [phoneId]: phoneSet };
+    });
+  }, []);
+
+  // Clear unread status for a chat when the user opens it
+  const markRead = useCallback((phoneId: string, chatId: string) => {
+    setUnreadChats((prev) => {
+      const phoneSet = new Set(prev[phoneId] ?? []);
+      phoneSet.delete(chatId);
+      return { ...prev, [phoneId]: phoneSet };
+    });
+  }, []);
+
+  // Reset selected chat when switching phones — prevents a chat from a previous
+  // phone appearing in the conversation pane of the newly selected phone.
+  const prevSelectedPhoneIdRef = useRef<string | null>(selectedPhone?.id ?? null);
+  useEffect(() => {
+    if (selectedPhone?.id !== prevSelectedPhoneIdRef.current) {
+      setSelectedChatId(null);
+      prevSelectedPhoneIdRef.current = selectedPhone?.id ?? null;
+    }
+  }, [selectedPhone?.id]);
+
   // Refs for Ably callback access to latest state without re-subscribing
+  const phonesRef = useRef(phones);
   const selectedPhoneRef = useRef(selectedPhone);
   const selectedChatIdRef = useRef(selectedChatId);
   const phoneStatusesRef = useRef(phoneStatuses);
+  useEffect(() => {
+    phonesRef.current = phones;
+  }, [phones]);
   useEffect(() => {
     selectedPhoneRef.current = selectedPhone;
   }, [selectedPhone]);
@@ -68,6 +145,64 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
+  // Auto-clear unread and missed calls when a chat becomes visible
+  useEffect(() => {
+    if (selectedPhone && selectedChatId) {
+      markRead(selectedPhone.id, selectedChatId);
+      clearMissedCall(selectedPhone.id, selectedChatId);
+    }
+  }, [selectedPhone, selectedChatId, markRead, clearMissedCall]);
+
+  // Auto-check call permissions when a conversation is opened
+  useEffect(() => {
+    if (!selectedPhone || !selectedChatId) return undefined;
+    // Don't re-check if a permission request is in flight
+    const existing = permissionMap[selectedChatId]?.state;
+    if (existing === 'pending' || existing === 'checking') return undefined;
+    // Don't check during an active call
+    if (callState.state !== 'IDLE') return undefined;
+
+    let cancelled = false;
+    (async () => {
+      setPermissionMap(prev => ({ ...prev, [selectedChatId]: { state: 'checking' } }));
+      try {
+        const res = await fetch(
+          `/api/calls/permissions?phoneNumberId=${selectedPhone.id}&wabaId=${selectedPhone.wabaId}&userWaId=${selectedChatId}`,
+        );
+        if (cancelled) return;
+        const data = await res.json();
+        if (data.error) {
+          setPermissionMap(prev => { const next = { ...prev }; delete next[selectedChatId]; return next; });
+          return;
+        }
+        const permStatus = data.permission?.status;
+        const remaining = formatRemainingRequests(data.actions ?? []);
+        if (permStatus === 'permanent') {
+          setPermissionMap(prev => { const next = { ...prev }; delete next[selectedChatId]; return next; });
+        } else if (permStatus === 'temporary') {
+          const expTime = data.permission?.expiration_time
+            ? data.permission.expiration_time * 1000
+            : undefined;
+          setPermissionMap(prev => ({ ...prev, [selectedChatId]: { state: 'granted', expirationTime: expTime, remainingRequests: remaining } }));
+        } else {
+          const sendAction = data.actions?.find(
+            (a: { action_name: string }) => a.action_name === 'send_call_permission_request',
+          );
+          if (sendAction && sendAction.can_perform_action === false) {
+            setPermissionMap(prev => ({ ...prev, [selectedChatId]: { state: 'rate_limited' } }));
+          } else {
+            setPermissionMap(prev => ({ ...prev, [selectedChatId]: { state: 'requesting', remainingRequests: remaining } }));
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setPermissionMap(prev => { const next = { ...prev }; delete next[selectedChatId]; return next; });
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-check when conversation changes
+  }, [selectedPhone?.id, selectedChatId]);
 
   // State management functions
   const addMessage = useCallback((phoneId: string, chatId: string, message: Message) => {
@@ -83,6 +218,75 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
       };
     });
   }, []);
+
+  // Initialize CallingClient
+  useEffect(() => {
+    callingClientRef.current = new CallingClient((state, meta) => {
+      setCallState(prev => ({
+        ...prev,
+        state,
+        ...(meta?.direction ? { direction: meta.direction } : {}),
+        ...(meta?.destPhone ? { destPhone: meta.destPhone } : {}),
+        ...(meta?.callId ? { callId: meta.callId } : {}),
+        ...(meta?.endReason === 'failed' ? { error: 'Connection failed' } : {}),
+      }));
+
+      // Reset to IDLE after ENDED so the next call can come through
+      if (state === 'ENDED') {
+        const endedChatId = meta?.callerNumber ?? meta?.destPhone;
+        if (endedResetTimeoutRef.current) clearTimeout(endedResetTimeoutRef.current);
+        endedResetTimeoutRef.current = setTimeout(() => {
+          endedResetTimeoutRef.current = null;
+          setCallState({ state: 'IDLE' });
+          if (endedChatId) {
+            setPermissionMap(prev => {
+              const next = { ...prev };
+              delete next[endedChatId];
+              return next;
+            });
+          }
+        }, 4000);
+      }
+
+      // Determine the chat thread ID (callerNumber for inbound, destPhone for outbound)
+      const chatId = meta?.callerNumber ?? meta?.destPhone;
+
+      // Insert call event bubble into message thread
+      if (meta?.phoneNumberId && chatId) {
+        if (state === 'ACTIVE') {
+          addMessage(meta.phoneNumberId, chatId, {
+            type: 'call_event',
+            event: 'started',
+            direction: meta.direction,
+            timestamp: Date.now(),
+          } as Message);
+        }
+        if (state === 'ENDED' && meta.endReason) {
+          // remote_hangup bubble is added by the Ably terminate handler (with webhook duration)
+          const dir = meta.direction;
+          const eventMap: Record<string, Message> = {
+            rejected: { type: 'call_event', event: 'declined', direction: dir, timestamp: Date.now() } as Message,
+            missed: { type: 'call_event', event: 'missed', direction: dir, timestamp: Date.now() } as Message,
+            failed: { type: 'call_event', event: 'failed', direction: dir, timestamp: Date.now() } as Message,
+          };
+          const msg = eventMap[meta.endReason];
+          if (msg) addMessage(meta.phoneNumberId, chatId, msg);
+          if (meta.endReason === 'missed') markMissedCall(meta.phoneNumberId, chatId);
+        }
+      }
+    });
+
+    return () => {
+      const cs = callStateRef.current;
+      if (cs.state === 'ACTIVE' || cs.state === 'CONNECTING' || cs.state === 'RINGING') {
+        if (cs.phoneNumberId && cs.wabaId && cs.callId) {
+          callingClientRef.current?.hangUp(cs.phoneNumberId, cs.wabaId, cs.callId);
+          return;
+        }
+      }
+      callingClientRef.current?.cleanup();
+    };
+  }, [addMessage, markMissedCall]);
 
   const addChat = useCallback((phoneId: string, chatId: string, displayName: string, lastMessage?: string) => {
     setAllChats((prev) => {
@@ -100,12 +304,17 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
   // Send message handler
   const handleSendMessage = useCallback(
     (phone: PhoneDetails, chatId: string, text: string) => {
-      addMessage(phone.id, chatId, {
-        text,
-        direction: 'outgoing',
-        timestamp: Date.now(),
-      });
-      addChat(phone.id, chatId, allChats[phone.id]?.[chatId]?.displayName ?? chatId, text);
+      // Only update local inbox state for CONNECTED phones — prevents chats from
+      // leaking into the inbox of phones that are Pending or Disconnected.
+      if (phoneStatusesRef.current[phone.id] === 'CONNECTED') {
+        addMessage(phone.id, chatId, {
+          type: 'text',
+          text,
+          direction: 'outgoing',
+          timestamp: Date.now(),
+        });
+        addChat(phone.id, chatId, allChats[phone.id]?.[chatId]?.displayName ?? chatId, text);
+      }
 
       fetch('/api/send', {
         method: 'POST',
@@ -116,19 +325,210 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
           dest_phone: chatId,
           message_content: text,
         }),
-      }).catch(console.error);
+      }).catch((error) => {
+        console.error('Failed to send message:', error);
+        addMessage(phone.id, chatId, {
+          type: 'text',
+          text: 'Failed to send message',
+          direction: 'outgoing',
+          timestamp: Date.now(),
+        });
+      });
     },
     [addMessage, addChat, allChats],
   );
+
+  const handleAcceptCall = useCallback(async () => {
+    const cs = callStateRef.current;
+    console.log('[Calling] handleAcceptCall called, state:', cs.state, 'hasOffer:', !!cs.offerSdp, 'phoneNumberId:', cs.phoneNumberId, 'callId:', cs.callId);
+    if (!cs.offerSdp || !cs.phoneNumberId || !cs.wabaId || !cs.callId) return;
+    if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
+    stopRinging();
+    // Navigate to the caller's conversation
+    if (cs.callerNumber) {
+      const phone = phonesRef.current.find(p => p.id === cs.phoneNumberId);
+      if (phone) {
+        setSelectedPhone(phone);
+        setSelectedChatId(cs.callerNumber);
+        // Create chat if it doesn't exist, or update name if we have one from the webhook
+        const displayName = cs.callerName || cs.callerNumber;
+        setAllChats(prev => {
+          const phoneChats = prev[cs.phoneNumberId!] ?? {};
+          const existing = phoneChats[cs.callerNumber!];
+          if (existing && existing.displayName !== cs.callerNumber) return prev; // keep existing name
+          return { ...prev, [cs.phoneNumberId!]: { ...phoneChats, [cs.callerNumber!]: { ...existing, displayName, lastTimestamp: existing?.lastTimestamp ?? Date.now() } } };
+        });
+      }
+    }
+    try {
+      await callingClientRef.current?.acceptCall(
+        cs.offerSdp,
+        cs.phoneNumberId,
+        cs.wabaId,
+        cs.callId,
+      );
+    } catch (err) {
+      setCallState(prev => ({
+        ...prev,
+        state: 'ENDED',
+        error: err instanceof Error ? err.message : 'Failed to accept call',
+      }));
+    }
+  }, []);
+
+  const handleRejectCall = useCallback(async () => {
+    const cs = callStateRef.current;
+    if (!cs.phoneNumberId || !cs.wabaId || !cs.callId) return;
+    if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
+    stopRinging();
+    await callingClientRef.current?.rejectCall(
+      cs.phoneNumberId,
+      cs.wabaId,
+      cs.callId,
+    );
+  }, []);
+
+  const handleHangUp = useCallback(async () => {
+    const cs = callStateRef.current;
+    if (!cs.phoneNumberId || !cs.wabaId || !cs.callId) return;
+    await callingClientRef.current?.hangUp(
+      cs.phoneNumberId,
+      cs.wabaId,
+      cs.callId,
+    );
+  }, []);
+
+  const startOutboundCall = useCallback(async (phoneNumberId: string, wabaId: string, destPhone: string) => {
+    // Clear any pending ENDED→IDLE reset so it doesn't fire during the new call
+    if (endedResetTimeoutRef.current) {
+      clearTimeout(endedResetTimeoutRef.current);
+      endedResetTimeoutRef.current = null;
+    }
+    setCallState({
+      state: 'CONNECTING',
+      direction: 'outbound',
+      phoneNumberId,
+      wabaId,
+      destPhone,
+    });
+
+    try {
+      const callId = await callingClientRef.current?.startCall(phoneNumberId, wabaId, destPhone);
+      if (callId) {
+        setCallState(prev => ({ ...prev, callId }));
+      }
+    } catch (err) {
+      console.error('[Calling] startCall failed:', err);
+      setCallState(prev => ({
+        ...prev,
+        state: 'ENDED',
+        error: err instanceof Error ? err.message : 'Failed to start call',
+      }));
+    }
+  }, []);
+
+  // Outbound call: check permission and start call or show permission UI
+  const handleCallClick = useCallback(async (chatId: string) => {
+    const phone = selectedPhoneRef.current;
+    if (!phone) return;
+    if (callStateRef.current.state !== 'IDLE') return;
+
+    // Show "Checking..." while we query the API — don't show "permission required" yet
+    setPermissionMap(prev => ({ ...prev, [chatId]: { state: 'checking' } }));
+
+    try {
+      const res = await fetch(
+        `/api/calls/permissions?phoneNumberId=${phone.id}&wabaId=${phone.wabaId}&userWaId=${chatId}`,
+      );
+      const data = await res.json();
+
+      console.log('[Calling] Permission check response:', JSON.stringify(data));
+
+      if (data.error) {
+        console.error('[Calling] Permission check error:', data.error);
+        setPermissionMap(prev => { const next = { ...prev }; delete next[chatId]; return next; });
+        return;
+      }
+
+      // Response shape: { permission: { status: "permanent"|"temporary"|... }, actions: [...] }
+      const permStatus = data.permission?.status;
+      const hasPermission = permStatus === 'permanent' || permStatus === 'temporary';
+      const remaining = formatRemainingRequests(data.actions ?? []);
+
+      if (hasPermission) {
+        // Permission granted — start call immediately
+        setPermissionMap(prev => { const next = { ...prev }; delete next[chatId]; return next; });
+        await startOutboundCall(phone.id, phone.wabaId, chatId);
+      } else {
+        // Check if we can request permission or are rate limited
+        const sendAction = data.actions?.find(
+          (a: { action_name: string }) => a.action_name === 'send_call_permission_request',
+        );
+        if (sendAction && sendAction.can_perform_action === false) {
+          setPermissionMap(prev => ({ ...prev, [chatId]: { state: 'rate_limited' } }));
+        } else {
+          setPermissionMap(prev => ({ ...prev, [chatId]: { state: 'requesting', remainingRequests: remaining } }));
+        }
+      }
+    } catch (err) {
+      console.error('[Calling] Permission check failed:', err);
+      setPermissionMap(prev => { const next = { ...prev }; delete next[chatId]; return next; });
+    }
+  }, [startOutboundCall]);
+
+  const handleRequestPermission = useCallback(async () => {
+    const phone = selectedPhoneRef.current;
+    const chatId = selectedChatIdRef.current;
+    if (!phone || !chatId) return;
+
+    setPermissionMap(prev => ({ ...prev, [chatId]: { state: 'pending' } }));
+    addMessage(phone.id, chatId, {
+      type: 'permission_event', event: 'requested', timestamp: Date.now(),
+    } as Message);
+
+    try {
+      const res = await fetch('/api/calls/request-permission', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumberId: phone.id,
+          wabaId: phone.wabaId,
+          to: chatId,
+        }),
+      });
+
+      const data = await res.json();
+      console.log('[Calling] Permission request response:', res.status, JSON.stringify(data));
+
+      if (!res.ok) {
+        console.error('[Calling] Permission request failed:', data.error);
+        setPermissionMap(prev => ({ ...prev, [chatId]: { state: 'requesting' } }));
+      }
+      // Stay in 'pending' — wait for webhook reply
+    } catch (err) {
+      console.error('[Calling] Permission request error:', err);
+      setPermissionMap(prev => ({ ...prev, [chatId]: { state: 'requesting' } }));
+    }
+  }, [addMessage]);
+
+  const handleRetryCall = useCallback(async () => {
+    const cs = callStateRef.current;
+    if (!cs.phoneNumberId || !cs.wabaId || !cs.destPhone) return;
+    setCallState({ state: 'IDLE' });
+    await startOutboundCall(cs.phoneNumberId, cs.wabaId, cs.destPhone);
+  }, [startOutboundCall]);
 
   // Ably connection — single connection for ALL phones
   useEffect(() => {
     const ablyClient = new Ably.Realtime({
       authCallback: async (_, callback) => {
-        fetch('/api/ably-auth')
-          .then((res) => res.json())
-          .then((tokenRequest) => callback(null, tokenRequest))
-          .catch((error) => callback(error, null));
+        try {
+          const response = await fetch('/api/ably-auth');
+          const tokenRequest = await response.json();
+          callback(null, tokenRequest);
+        } catch (error) {
+          callback(error, null);
+        }
       },
     });
 
@@ -154,44 +554,257 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
 
     const channel = ablyClient.channels.get('get-started');
     channel.subscribe('first', (message) => {
-      // Handle incoming and ackbot messages
-      const msgData = message.data.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-      const text = msgData?.text?.body;
-      if (text) {
-        const phoneId = message.data.entry?.[0]?.changes?.[0]?.value?.metadata?.phone_number_id;
+      const ownedPhoneIds = new Set(phonesRef.current.map((p) => p.id));
+      const fields = message.data.entry?.flatMap((e: { changes?: { field: string }[] }) => e.changes?.map((c) => c.field));
+      console.log('[Webhook] Received first event. fields:', fields, 'owned phones:', [...ownedPhoneIds]);
 
-        // Drop messages for disconnected phones
-        if (phoneId && phoneStatusesRef.current[phoneId] !== 'CONNECTED') {
-          return;
-        }
+      // Process each change in the webhook payload
+      for (const entry of message.data.entry ?? []) {
+        for (const change of entry.changes ?? []) {
+          const value = change.value;
+          const field = change.field;
+          const phoneId = value?.metadata?.phone_number_id;
 
-        const fromField = msgData?.from;
-        const isAckBot = fromField === '_ackbot_';
-        const consumerPhone = isAckBot ? msgData?._ackbot_recipient : fromField;
-        const displayName = message.data.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name;
-        const msgTimestamp = msgData?.timestamp;
+          if (!phoneId || !ownedPhoneIds.has(phoneId)) continue;
 
-        addMessage(phoneId, consumerPhone, {
-          text,
-          direction: isAckBot ? 'outgoing' : 'incoming',
-          timestamp: msgTimestamp ? msgTimestamp * 1000 : Date.now(),
-        });
+          // Handle calling webhooks
+          if (field === 'calls') {
+            const call = value?.calls?.[0];
+            if (call) {
+              console.log('[Calling] Received call event:', call.event, 'sdp_type:', call.session?.sdp_type, 'from:', call.from);
 
-        if (!isAckBot) {
-          addChat(phoneId, consumerPhone, displayName ?? consumerPhone, text);
-        }
+              // Direction-aware connect webhook handling
+              if (call.event === 'connect' && call.session?.sdp) {
+                const currentState = callStateRef.current.state;
+                const sdpType = call.session.sdp_type;
 
-        // Auto-select first incoming chat if no chat is selected
-        if (phoneId === selectedPhoneRef.current?.id && !selectedChatIdRef.current) {
-          setSelectedChatId(consumerPhone);
+                if (currentState === 'IDLE' && sdpType === 'offer') {
+                  // INBOUND: new incoming call with offer SDP
+                  const contactName = value?.contacts?.[0]?.profile?.name;
+                  setCallState({
+                    state: 'RINGING',
+                    direction: 'inbound',
+                    callId: call.id,
+                    phoneNumberId: phoneId,
+                    wabaId: entry.id,
+                    callerNumber: call.from,
+                    callerName: contactName,
+                    offerSdp: call.session.sdp,
+                  });
+
+                  if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
+                  ringTimeoutRef.current = setTimeout(() => {
+                    if (callStateRef.current.state === 'RINGING' && callStateRef.current.direction === 'inbound') {
+                      callingClientRef.current?.onRemoteEnd(call.id, phoneId, entry.id, 'failed');
+                      setCallState(prev => ({ ...prev, state: 'ENDED', error: undefined }));
+                      setTimeout(() => setCallState({ state: 'IDLE' }), 4000);
+                      addMessage(phoneId, call.from, {
+                        type: 'call_event', event: 'missed', direction: 'inbound', timestamp: Date.now(),
+                      } as Message);
+                      markMissedCall(phoneId, call.from);
+                    }
+                  }, 30000);
+
+                } else if (
+                  (currentState === 'CONNECTING' || currentState === 'RINGING')
+                  && sdpType === 'answer'
+                  && callStateRef.current.direction === 'outbound'
+                  && call.id === callStateRef.current.callId
+                ) {
+                  // OUTBOUND: answer SDP for our pending outbound call
+                  console.log('[Calling] Outbound answer SDP received');
+                  callingClientRef.current?.handleAnswerSdp(call.session.sdp);
+                  // ACTIVE state is set by onconnectionstatechange
+                } else if (currentState !== 'IDLE' && sdpType === 'offer') {
+                  // Another inbound call while already on a call — reject and log as missed
+                  const callerName = value?.contacts?.[0]?.profile?.name;
+                  console.log('[Calling] Incoming call while busy, rejecting:', call.from, callerName);
+                  fetch('/api/calls/reject', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phoneNumberId: phoneId, wabaId: entry.id, callId: call.id }),
+                  }).catch(err => console.error('[Calling] Reject busy call failed:', err));
+                  addMessage(phoneId, call.from, {
+                    type: 'call_event', event: 'missed', direction: 'inbound', timestamp: Date.now(),
+                  } as Message);
+                  markMissedCall(phoneId, call.from);
+                  // Add to chat list if not already present (don't overwrite existing data)
+                  setAllChats(prev => {
+                    if (prev[phoneId]?.[call.from]) return prev;
+                    const phoneChats = prev[phoneId] ?? {};
+                    return { ...prev, [phoneId]: { ...phoneChats, [call.from]: { displayName: callerName ?? call.from, lastMessage: 'Missed call', lastTimestamp: Date.now() } } };
+                  });
+                } else {
+                  console.warn('[Calling] Ignoring connect webhook: state=', currentState,
+                    'sdpType=', sdpType, 'callId=', call.id);
+                }
+              }
+
+              if (call.event === 'terminate') {
+                console.log('[Calling] Terminate webhook: state=', callStateRef.current.state,
+                  'direction=', callStateRef.current.direction, 'callId=', call.id);
+                if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
+                // For outbound, use destPhone as the chat thread; for inbound, use callerNumber
+                const chatThreadId = callStateRef.current.direction === 'outbound'
+                  ? callStateRef.current.destPhone ?? call.from
+                  : callStateRef.current.callerNumber ?? call.from;
+
+                const callDir = callStateRef.current.direction;
+                if ((callStateRef.current.state === 'RINGING' || callStateRef.current.state === 'CONNECTING')
+                  && callDir === 'inbound') {
+                  setCallState(prev => ({ ...prev, state: 'ENDED' }));
+                  setTimeout(() => setCallState({ state: 'IDLE' }), 4000);
+                  addMessage(phoneId, chatThreadId, {
+                    type: 'call_event', event: 'missed', direction: 'inbound', timestamp: Date.now(),
+                  } as Message);
+                  markMissedCall(phoneId, chatThreadId);
+                } else if (callStateRef.current.state === 'ACTIVE' || callStateRef.current.state === 'CONNECTING' || callStateRef.current.state === 'RINGING') {
+                  callingClientRef.current?.onRemoteEnd(call.id, phoneId, entry.id, 'remote_hangup');
+                  addMessage(phoneId, chatThreadId, {
+                    type: 'call_event', event: 'ended', direction: callDir, duration: call.duration, timestamp: Date.now(),
+                  } as Message);
+                } else {
+                  // Local hangup already processed — just add the duration bubble
+                  if (call.duration) {
+                    addMessage(phoneId, chatThreadId, {
+                      type: 'call_event', event: 'ended', direction: callDir, duration: call.duration, timestamp: Date.now(),
+                    } as Message);
+                  }
+                }
+              }
+
+              if (call.event === 'failed') {
+                if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
+                callingClientRef.current?.onRemoteEnd(call.id, phoneId, entry.id, 'failed');
+              }
+            }
+
+            // Handle call statuses (outbound)
+            const status = value?.statuses?.[0];
+            if (status
+              && callStateRef.current.direction === 'outbound'
+              && status.id === callStateRef.current.callId) {
+              const statusLower = status.status?.toLowerCase();
+              console.log('[Calling] Outbound status:', statusLower);
+              if (statusLower === 'ringing') {
+                setCallState(prev => ({ ...prev, state: 'RINGING' }));
+              } else if (statusLower === 'accepted') {
+                // User picked up — transition to ACTIVE and start the timer
+                setCallState(prev => ({ ...prev, state: 'ACTIVE' }));
+              } else if (statusLower === 'failed') {
+                callingClientRef.current?.onRemoteEnd(status.id, phoneId, entry.id, 'failed');
+              } else if (statusLower === 'rejected') {
+                const destPhone = callStateRef.current.destPhone ?? '';
+                callingClientRef.current?.cleanup();
+                setCallState(prev => ({ ...prev, state: 'ENDED' }));
+                setTimeout(() => {
+                  setCallState({ state: 'IDLE' });
+                  if (destPhone) {
+                    setPermissionMap(prev => { const next = { ...prev }; delete next[destPhone]; return next; });
+                  }
+                }, 4000);
+                if (destPhone) {
+                  addMessage(phoneId, destPhone, {
+                    type: 'call_event', event: 'declined', direction: 'outbound', timestamp: Date.now(),
+                  } as Message);
+                }
+              }
+            }
+
+            continue;
+          }
+
+          // Handle messaging webhooks
+          if (field === 'messages' || !field) {
+            const msgData = value?.messages?.[0];
+
+            // Check for call_permission_reply
+            if (msgData?.type === 'interactive'
+              && msgData?.interactive?.type === 'call_permission_reply') {
+              const reply = msgData.interactive.call_permission_reply;
+              const replyFrom = msgData.from;
+              if (replyFrom) {
+                if (reply.response === 'accept') {
+                  // Only show bubble if we were actively requesting permission
+                  // (avoids spurious bubbles from implicit grants after inbound calls)
+                  const wasRequesting = permissionMapRef.current[replyFrom]?.state === 'pending';
+                  setPermissionMap(prev => ({ ...prev, [replyFrom]: { state: 'granted' } }));
+                  if (wasRequesting) {
+                    addMessage(phoneId, replyFrom, {
+                      type: 'permission_event', event: 'granted', timestamp: Date.now(),
+                    } as Message);
+                  }
+                  // Re-fetch to get actual status (permanent vs temporary) and expiration
+                  const phone = phonesRef.current.find(p => p.id === phoneId);
+                  if (phone) {
+                    fetch(`/api/calls/permissions?phoneNumberId=${phoneId}&wabaId=${phone.wabaId}&userWaId=${replyFrom}`)
+                      .then(r => r.json())
+                      .then(data => {
+                        const permStatus = data.permission?.status;
+                        const remaining = formatRemainingRequests(data.actions ?? []);
+                        if (permStatus === 'permanent') {
+                          setPermissionMap(prev => ({ ...prev, [replyFrom]: { state: 'granted', remainingRequests: remaining } }));
+                        } else if (permStatus === 'temporary') {
+                          const expTime = data.permission?.expiration_time
+                            ? data.permission.expiration_time * 1000
+                            : undefined;
+                          setPermissionMap(prev => ({ ...prev, [replyFrom]: { state: 'granted', expirationTime: expTime, remainingRequests: remaining } }));
+                        }
+                      })
+                      .catch(() => {});
+                  }
+                } else if (reply.response === 'reject') {
+                  setPermissionMap(prev => ({ ...prev, [replyFrom]: { state: 'denied' } }));
+                  addMessage(phoneId, replyFrom, {
+                    type: 'permission_event', event: 'declined', timestamp: Date.now(),
+                  } as Message);
+                }
+              }
+              continue;
+            }
+
+            if (phoneStatusesRef.current[phoneId] !== 'CONNECTED') continue;
+
+            const text = msgData?.text?.body;
+            if (!text) continue;
+
+            const fromField = msgData?.from;
+            const isAckBot = fromField === '_ackbot_';
+            const consumerPhone = isAckBot ? msgData?._ackbot_recipient : fromField;
+            const displayName = value?.contacts?.[0]?.profile?.name;
+            const msgTimestamp = msgData?.timestamp;
+
+            addMessage(phoneId, consumerPhone, {
+              type: 'text',
+              text,
+              direction: isAckBot ? 'outgoing' : 'incoming',
+              timestamp: msgTimestamp ? msgTimestamp * 1000 : Date.now(),
+            });
+
+            if (!isAckBot) {
+              addChat(phoneId, consumerPhone, displayName ?? consumerPhone, text);
+            }
+            const isCurrentlyViewing =
+              phoneId === selectedPhoneRef.current?.id &&
+              consumerPhone === selectedChatIdRef.current;
+            if (!isAckBot && !isCurrentlyViewing) {
+              markUnread(phoneId, consumerPhone);
+            }
+            if (phoneId === selectedPhoneRef.current?.id && !selectedChatIdRef.current) {
+              setSelectedChatId(consumerPhone);
+            }
+          }
         }
       }
     });
 
     return () => {
+      if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
+      if (endedResetTimeoutRef.current) clearTimeout(endedResetTimeoutRef.current);
+      channel.unsubscribe();
       ablyClient.close();
     };
-  }, [addMessage, addChat]);
+  }, [addMessage, addChat, markUnread, markMissedCall]);
 
   return (
     <div className="flex flex-col w-full h-full overflow-hidden bg-gray-50">
@@ -289,6 +902,7 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
                     externalStatus={phoneStatuses[selectedPhone.id]}
                   />
                   <AckBotStatus key={'ab-' + selectedPhone.id} phone={selectedPhone} />
+                  <CallingStatus key={'cs-' + selectedPhone.id} phone={selectedPhone} />
                 </div>
               </div>
 
@@ -328,6 +942,18 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
                         : 'Phone disconnected — click status to reconnect'}
               </div>
 
+              {/* Call banner — shown only for active calls (permission UI moved to inline ribbon) */}
+              {callState.state !== 'IDLE' && callState.phoneNumberId === selectedPhone.id && (
+                <CallBanner
+                  callState={callState}
+                  callingClient={callingClientRef.current}
+                  onAccept={handleAcceptCall}
+                  onReject={handleRejectCall}
+                  onHangUp={handleHangUp}
+                  onRetry={handleRetryCall}
+                />
+              )}
+
               {/* Chat list + conversation */}
               <div className="flex flex-1 min-h-0">
                 {/* Chat list (only shown when there are conversations) */}
@@ -338,35 +964,69 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
                     </div>
                     {Object.entries(allChats[selectedPhone.id] ?? {})
                       .sort(([, a], [, b]) => (b.lastTimestamp ?? 0) - (a.lastTimestamp ?? 0))
-                      .map(([chatId, chat]) => (
-                        <button
-                          key={chatId}
-                          onClick={() => setSelectedChatId(chatId)}
-                          className={cn(
-                            'w-full text-left flex items-center gap-3 px-4 py-3 border-b border-gray-50 transition-colors',
-                            selectedChatId === chatId ? 'bg-indigo-50' : 'hover:bg-gray-50',
-                          )}
-                        >
-                          <div
+                      .map(([chatId, chat]) => {
+                        const isUnread = unreadChats[selectedPhone.id]?.has(chatId) ?? false;
+                        const hasMissedCall = missedCallChats[selectedPhone.id]?.has(chatId) ?? false;
+                        return (
+                          <button
+                            key={chatId}
+                            onClick={() => {
+                              setSelectedChatId(chatId);
+                              markRead(selectedPhone.id, chatId);
+                            }}
                             className={cn(
-                              'w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0',
-                              selectedChatId === chatId ? 'bg-indigo-100 text-indigo-600' : 'bg-gray-100 text-gray-500',
+                              'w-full text-left flex items-center gap-3 px-4 py-3 border-b border-gray-50 transition-colors',
+                              selectedChatId === chatId ? 'bg-indigo-50' : 'hover:bg-gray-50',
                             )}
                           >
-                            {chat.displayName.slice(0, 2).toUpperCase()}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div
-                              className={cn('text-sm font-medium truncate', selectedChatId === chatId ? 'text-indigo-700' : 'text-gray-900')}
-                            >
-                              {chat.displayName}
+                            <div className="relative flex-shrink-0">
+                              <div
+                                className={cn(
+                                  'w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold',
+                                  selectedChatId === chatId ? 'bg-indigo-100 text-indigo-600' : 'bg-gray-100 text-gray-500',
+                                )}
+                              >
+                                {chat.displayName.slice(0, 2).toUpperCase()}
+                              </div>
+                              {hasMissedCall && (
+                                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-red-500 ring-2 ring-white" />
+                              )}
+                              {isUnread && !hasMissedCall && (
+                                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-indigo-500 ring-2 ring-white" />
+                              )}
                             </div>
-                            {chat.lastMessage && (
-                              <div className="text-xs text-gray-400 truncate mt-0.5">{chat.lastMessage}</div>
-                            )}
-                          </div>
-                        </button>
-                      ))}
+                            <div className="flex-1 min-w-0">
+                              <div
+                                className={cn(
+                                  'text-sm truncate',
+                                  selectedChatId === chatId ? 'font-medium text-indigo-700' :
+                                  isUnread ? 'font-semibold text-gray-900' : 'font-medium text-gray-700',
+                                )}
+                              >
+                                {chat.displayName}
+                              </div>
+                              {chat.lastMessage && (
+                                <div className={cn(
+                                  'text-xs truncate mt-0.5',
+                                  isUnread ? 'text-gray-600 font-medium' : 'text-gray-400',
+                                )}>{chat.lastMessage}</div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              {(() => {
+                                const perm = permissionMap[chatId]?.state;
+                                if (perm === 'granted') return <PhoneIcon className="w-3 h-3 text-green-500" />;
+                                if (perm === 'pending') return <PhoneIcon className="w-3 h-3 text-blue-400 animate-pulse" />;
+                                if (perm === 'requesting' || perm === 'rate_limited' || perm === 'denied') return <PhoneIcon className="w-3 h-3 text-gray-300" />;
+                                return null;
+                              })()}
+                              {isUnread && (
+                                <span className="w-2 h-2 rounded-full bg-indigo-500" />
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
                   </div>
                 )}
 
@@ -381,11 +1041,18 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
                       phoneDisplay={selectedPhone.display_phone_number}
                       isAckBotEnabled={selectedPhone.isAckBotEnabled}
                       onToggleAckBot={() => {}}
+                      onCallClick={() => handleCallClick(selectedChatId)}
+                      callActive={callState.state !== 'IDLE'}
+                      permissionState={permissionMap[selectedChatId]?.state}
+                      permissionExpirationTime={permissionMap[selectedChatId]?.expirationTime}
+                      permissionRemainingRequests={permissionMap[selectedChatId]?.remainingRequests}
+                      onRequestPermission={handleRequestPermission}
+                      hasMissedCall={missedCallChats[selectedPhone.id]?.has(selectedChatId) ?? false}
+                      onCallBack={() => handleCallClick(selectedChatId)}
                     />
                   ) : (
                     <div
-                      className="flex-1 flex flex-col items-center justify-center text-left px-6"
-                      style={{ background: 'linear-gradient(180deg, #f8f9ff 0%, #f1f3f9 100%)' }}
+                      className="flex-1 flex flex-col items-center justify-center text-left px-6 bg-gradient-to-b from-[#f8f9ff] to-[#f1f3f9]"
                     >
                       <div className="w-16 h-16 rounded-full bg-white shadow-sm flex items-center justify-center mb-4">
                         <svg className="w-8 h-8 text-indigo-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -409,8 +1076,7 @@ export default function InboxLayout({ phones }: { phones: PhoneDetails[] }) {
             </>
           ) : (
             <div
-              className="flex-1 flex flex-col items-center justify-center text-left px-6"
-              style={{ background: 'linear-gradient(180deg, #f8f9ff 0%, #f1f3f9 100%)' }}
+              className="flex-1 flex flex-col items-center justify-center text-left px-6 bg-gradient-to-b from-[#f8f9ff] to-[#f1f3f9]"
             >
               <div className="w-16 h-16 rounded-full bg-white shadow-sm flex items-center justify-center mb-4">
                 <svg className="w-8 h-8 text-indigo-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">

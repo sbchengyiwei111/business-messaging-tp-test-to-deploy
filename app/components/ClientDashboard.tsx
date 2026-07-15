@@ -2,14 +2,13 @@
 //
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
+
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-
 import { useSearchParams, useRouter } from 'next/navigation';
-
-import { Settings2, Code2, Rocket, ChevronRight, ExternalLink, Info, CheckCircle2, Circle, Server } from 'lucide-react';
+import { Settings2, Code2, Rocket, ChevronRight, ExternalLink, Info, CheckCircle2, Circle, Server, HelpCircle } from 'lucide-react';
 
 import { formatErrors } from '@/app/errorformat';
 import { feGraphApiPostWrapper } from '@/app/feUtils';
@@ -269,7 +268,7 @@ const VERSION_TIP = (
       { name: 'v3', desc: 'Similar to v2 without forks. Adds app-only feature flag and removes proxy sharing.' },
       { name: 'v3-public-preview', desc: 'Reveals Unified Onboarding UI for Cloud API onboarding.' },
       { name: 'v3-alpha-1', desc: 'Alpha release with expanded Unified Onboarding for select partners/products.' },
-      { name: 'v4-public-preview (Testing only)', desc: 'Preview version of v4 for testing and feedback.' },
+      { name: 'v4-public-preview', desc: 'Preview version of v4 with Unified Onboarding UI for testing and feedback.' },
       { name: 'v4 (Recommended for production)', desc: 'Latest major release with enhanced features.' },
     ]}
     docLink={{
@@ -669,7 +668,9 @@ export default function ClientDashboard({
   const [esOptionVersion, setEsOptionVersion] = useState(initialEsVersion);
   const [esOptionReg, setEsOptionReg] = useState(true);
   const [esOptionSub, setEsOptionSub] = useState(true);
+  const [esOptionCalling, setEsOptionCalling] = useState(false);
   const [step, setStep] = useState<Step>(1);
+  const [configError, setConfigError] = useState(false);
 
   const computeEsConfig = (ft: string, cfg: string, feats: string[], ver: string) => {
     const c: Record<string, unknown> = {
@@ -690,7 +691,7 @@ export default function ClientDashboard({
   const [esConfig, setEsConfig] = useState(
     JSON.stringify(computeEsConfig(esOptionFeatureType, esOptionConfig, esOptionFeatures, esOptionVersion), null, 2),
   );
-  const [_bannerInfo, setBannerInfo] = useState<string>('');
+  const [, setBannerInfo] = useState<string>('');
   const [lastEventData, setLastEventData] = useState<unknown>(null);
 
   const recomputeJson = (ft: string, cfg: string, feats: string[], ver: string) => {
@@ -707,47 +708,55 @@ export default function ClientDashboard({
   const handleLastEventDataChange = useCallback((data: unknown) => setLastEventData(data), []);
 
   const handleSaveToken = useCallback(
-    (code: string, sessionInfo: SessionInfo) => {
+    async (code: string, sessionInfo: SessionInfo) => {
       setBannerInfo('Setting up WABA...');
       const {
-        waba_id,
-        business_id,
-        phone_number_id,
-        page_ids,
-        ad_account_ids,
-        catalog_ids,
-        dataset_ids,
-        instagram_account_ids,
+        waba_id: wabaId,
+        business_id: businessId,
+        phone_number_id: phoneNumberId,
+        page_ids: pageIds,
+        ad_account_ids: adAccountIds,
+        catalog_ids: catalogIds,
+        dataset_ids: datasetIds,
+        instagram_account_ids: instagramAccountIds,
       } = sessionInfo.data;
       const filterIds = (ids: string[] | undefined) => (ids || []).filter((id) => id && id.trim() !== '');
-      feGraphApiPostWrapper('/api/token', {
-        code,
-        app_id: appId,
-        waba_id,
-        waba_ids: waba_id ? [waba_id] : [],
-        business_id,
-        phone_number_id,
-        page_ids: page_ids || [],
-        ad_account_ids: ad_account_ids || [],
-        dataset_ids: filterIds(dataset_ids),
-        catalog_ids: filterIds(catalog_ids),
-        instagram_account_ids: filterIds(instagram_account_ids),
-        es_option_reg: esOptionReg,
-        es_option_sub: esOptionSub,
-        user_id: userId,
-      }).then((d) => setBannerInfo('WABA Setup Finished\n' + formatErrors(d) + '\n'));
+      try {
+        const d = await feGraphApiPostWrapper('/api/token', {
+          code,
+          app_id: appId,
+          waba_id: wabaId,
+          waba_ids: wabaId ? [wabaId] : [],
+          business_id: businessId,
+          phone_number_id: phoneNumberId,
+          page_ids: pageIds || [],
+          ad_account_ids: adAccountIds || [],
+          dataset_ids: filterIds(datasetIds),
+          catalog_ids: filterIds(catalogIds),
+          instagram_account_ids: filterIds(instagramAccountIds),
+          es_option_reg: esOptionReg,
+          es_option_sub: esOptionSub,
+          es_option_calling: esOptionCalling,
+          user_id: userId,
+        });
+        setBannerInfo('WABA Setup Finished\n' + formatErrors(d) + '\n');
+      } catch (err) {
+        console.error('WABA setup failed:', err);
+        setBannerInfo('WABA Setup Failed: ' + (err instanceof Error ? err.message : 'Unknown error'));
+      }
     },
-    [appId, esOptionReg, esOptionSub, userId],
+    [appId, esOptionReg, esOptionSub, esOptionCalling, userId],
   );
 
-  const handleClickFbl4b = useCallback(() => {
+  const handleClickFbl4b = useCallback((): boolean => {
+    if (!esOptionConfig) {
+      setConfigError(true);
+      return true;
+    }
+    setConfigError(false);
     setStep(3);
-    fetch('/api/log', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, action: 'launch_fbl4b' }),
-    });
-  }, [userId]);
+    return false;
+  }, [esOptionConfig]);
 
   const setFt = (v: string) => {
     if (v === 'only_waba_sharing') setEsOptionReg(false);
@@ -757,6 +766,7 @@ export default function ClientDashboard({
   };
   const setCfg = (v: string) => {
     setEsOptionConfig(v);
+    setConfigError(false);
     updateUrlParams({ tpConfig: v });
     recomputeJson(esOptionFeatureType, v, esOptionFeatures, esOptionVersion);
   };
@@ -838,6 +848,23 @@ export default function ClientDashboard({
                   </option>
                 ))}
               </SelectField>
+              {configError && (
+                <p className="text-[11px] text-red-400 font-normal -mt-3 leading-relaxed" style={{ fontFamily: 'inherit' }}>
+                  No config selected — please{' '}
+                  <a
+                    href={`https://developers.facebook.com/apps/${appId}/business-login/configurations/`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-0.5 text-red-500 underline underline-offset-2 hover:text-red-600 transition-colors font-medium"
+                  >
+                    create one
+                    <svg className="w-2.5 h-2.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </a>
+                  {' '}in DevX first.
+                </p>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <SelectField
@@ -846,11 +873,9 @@ export default function ClientDashboard({
                   value={esOptionVersion}
                   onChange={(e) => setVer(e.target.value)}
                 >
-                  {publicEsVersions
-                    .filter((v) => !['v3-alpha-1', 'v4-public-preview'].includes(v))
-                    .map((v: string) => (
+                  {publicEsVersions.map((v: string) => (
                       <option key={v} value={v}>
-                        {v === 'v4' ? 'v4 (Recommended for production)' : v}
+                        {v}
                       </option>
                     ))}
                 </SelectField>
@@ -942,6 +967,17 @@ export default function ClientDashboard({
                   />
                 }
               />
+              <Toggle
+                checked={esOptionCalling}
+                onChange={setEsOptionCalling}
+                label="Enable calling"
+                tip={
+                  <TipBody
+                    title="Enable calling"
+                    body="Enables WhatsApp Calling API on the phone number after signup. This allows inbound and outbound voice calls. You can also toggle calling per phone from the inbox."
+                  />
+                }
+              />
             </div>
           </SectionCard>
         </div>
@@ -978,6 +1014,28 @@ export default function ClientDashboard({
                 onSaveToken={handleSaveToken}
                 onQuickLaunch={undefined}
               />
+              {/* Facebook Login for Business settings reminder */}
+              <p className="mt-2 text-[11px] text-gray-400 leading-relaxed">
+                <span className="text-gray-500">Before launching, add your domain in </span>
+                <a
+                  href={`https://developers.facebook.com/apps/${appId}/business-login/settings/`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:text-blue-500 transition-colors"
+                >
+                  Facebook Login for Business → Settings
+                </a>
+                {' '}
+                <RichTip content={
+                  <div className="px-4 py-3 space-y-2">
+                    <p className="text-[12px] font-semibold text-gray-800">What to add in Settings</p>
+                    <p className="text-[11px] text-gray-500"><span className="font-medium text-gray-700">Valid OAuth Redirect URIs</span> &mdash; your app&apos;s domain</p>
+                    <p className="text-[11px] text-gray-500"><span className="font-medium text-gray-700">Allowed Domains for the JavaScript SDK</span> &mdash; your app&apos;s domain</p>
+                  </div>
+                }>
+                  <HelpCircle className="inline w-3 h-3 text-gray-400 cursor-help" />
+                </RichTip>
+              </p>
             </SectionCard>
 
             <SectionCard icon={<Code2 className="w-4 h-4" />} title="Response" subtitle="Results from the signup flow">
